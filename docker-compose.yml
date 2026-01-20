@@ -1,0 +1,34 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: groomer_postgres
+    environment:
+      POSTGRES_USER: groomer
+      POSTGRES_PASSWORD: groomer
+      POSTGRES_DB: groomer_mvp
+    ports:
+      - "5432:5432"
+    volumes:
+      - groomer_pgdata:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: groomer_api
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://groomer:groomer@postgres:5432/groomer_mvp
+      JWT_ACCESS_SECRET: change_me
+      JWT_REFRESH_SECRET: change_me_too
+      CORS_ORIGIN: http://localhost:8080
+    ports:
+      - "5050:3000"
+    depends_on:
+      - postgres
+    volumes:
+      - .:/app
+      - /app/node_modules
+
+volumes:
+  groomer_pgdata:

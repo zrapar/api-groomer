@@ -1,0 +1,6 @@
+export enum UserRole {
+  GROOMER_OWNER = "GROOMER_OWNER",
+  GROOMER_STAFF = "GROOMER_STAFF",
+  CLIENT = "CLIENT",
+  ADMIN = "ADMIN",
+}
