@@ -10,6 +10,8 @@ import { ServiceDurationRulesModule } from "./service-duration-rules/service-dur
 import { AvailabilityModule } from "./availability/availability.module";
 import { AppointmentsModule } from "./appointments/appointments.module";
 import { NotificationsModule } from "./notifications/notifications.module";
+import { PublicGroomersModule } from "./public-groomers/public-groomers.module";
+import { GoogleCalendarModule } from "./google-calendar/google-calendar.module";
 
 @Module({
   imports: [
@@ -22,6 +24,8 @@ import { NotificationsModule } from "./notifications/notifications.module";
     AvailabilityModule,
     AppointmentsModule,
     NotificationsModule,
+    PublicGroomersModule,
+    GoogleCalendarModule,
   ],
   controllers: [AppController],
   providers: [AppService],

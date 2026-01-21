@@ -20,6 +20,7 @@ import { PetSize, PetSpecies } from "../pets/dto/pet.enums";
 import { NotificationService } from "../notifications/notification.service";
 import { resolveDurationMinutes } from "../shared/duration";
 import { hasOverlap } from "../shared/overlap";
+import { GoogleCalendarService } from "../google-calendar/google-calendar.service";
 
 @Injectable()
 export class AppointmentsService {
@@ -27,6 +28,7 @@ export class AppointmentsService {
     @Inject(DRIZZLE_DB)
     private readonly db: NodePgDatabase<typeof schema>,
     private readonly notifications: NotificationService,
+    private readonly googleCalendar: GoogleCalendarService,
   ) {}
 
   async create(user: AuthUser, payload: CreateAppointmentDto) {
@@ -108,7 +110,7 @@ export class AppointmentsService {
 
     await this.ensureNoOverlap(business.id, startTime, endTime);
 
-    return this.db.transaction(async (tx) => {
+    const created = await this.db.transaction(async (tx) => {
       const [appointment] = await tx
         .insert(schema.appointments)
         .values({
@@ -142,6 +144,10 @@ export class AppointmentsService {
 
       return appointment;
     });
+    void this.googleCalendar.syncAppointment(created.id).catch((error) => {
+      console.warn("Google calendar sync failed", error);
+    });
+    return created;
   }
 
   async list(user: AuthUser) {
@@ -211,6 +217,9 @@ export class AppointmentsService {
       user.email,
       `Appointment ${appointmentId} status changed to ${payload.status}.`,
     );
+    void this.googleCalendar.syncAppointment(updated.id).catch((error) => {
+      console.warn("Google calendar sync failed", error);
+    });
 
     return updated;
   }
@@ -277,6 +286,9 @@ export class AppointmentsService {
       .where(eq(schema.appointments.id, appointmentId))
       .returning();
 
+    void this.googleCalendar.syncAppointment(updated.id).catch((error) => {
+      console.warn("Google calendar sync failed", error);
+    });
     return updated;
   }
 

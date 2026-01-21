@@ -5,6 +5,7 @@ import { RegisterDto } from "./dto/register.dto";
 import { LoginDto } from "./dto/login.dto";
 import { RefreshDto } from "./dto/refresh.dto";
 import { ClientLoginDto } from "./dto/client-login.dto";
+import { LoginLiteDto } from "./dto/login-lite.dto";
 import { AuthUser } from "./types/auth-user";
 
 @Controller("api/v1/auth")
@@ -19,6 +20,11 @@ export class AuthController {
   @Post("login")
   login(@Body() payload: LoginDto) {
     return this.authService.login(payload);
+  }
+
+  @Post("login-lite")
+  loginLite(@Body() payload: LoginLiteDto) {
+    return this.authService.loginLite(payload.email, payload.password);
   }
 
   @Post("client-login")

@@ -40,8 +40,12 @@ export class GroomerBusinessService {
         .insert(schema.groomerBusinesses)
         .values({
           ownerUserId: owner.id,
+          slug: payload.slug,
           name: payload.name,
           description: payload.description,
+          logoUrl: payload.logoUrl,
+          coverImageUrl: payload.coverImageUrl,
+          plan: payload.plan ?? "FREE",
           phone: payload.phone,
           email: payload.email,
           address: payload.address,
@@ -111,8 +115,12 @@ export class GroomerBusinessService {
       const [updated] = await tx
         .update(schema.groomerBusinesses)
         .set({
+          slug: payload.slug ?? business.slug,
           name: payload.name ?? business.name,
           description: payload.description ?? business.description,
+          logoUrl: payload.logoUrl ?? business.logoUrl,
+          coverImageUrl: payload.coverImageUrl ?? business.coverImageUrl,
+          plan: payload.plan ?? business.plan,
           phone: payload.phone ?? business.phone,
           email: payload.email ?? business.email,
           address: payload.address ?? business.address,

@@ -98,8 +98,12 @@ async function upsertBusiness(
     .insert(schema.groomerBusinesses)
     .values({
       ownerUserId,
+      slug: 'groomer-studio',
       name: 'Groomer Studio',
       description: 'Salon principal',
+      logoUrl: 'https://placehold.co/200x200?text=Groomer',
+      coverImageUrl: 'https://placehold.co/1200x400?text=Groomer+Studio',
+      plan: 'PRO',
       phone: '+1 555 000 000',
       email: 'studio@groomer.local',
       address: 'Calle Principal 123',

@@ -1,11 +1,11 @@
-import { ValidationPipe } from "@nestjs/common";
-import { NestFactory } from "@nestjs/core";
-import { AppModule } from "./app.module";
+import { ValidationPipe } from '@nestjs/common';
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  const corsOrigins = (process.env.CORS_ORIGIN || "")
-    .split(",")
+  const corsOrigins = (process.env.CORS_ORIGIN || '')
+    .split(',')
     .map((value) => value.trim())
     .filter(Boolean);
   app.enableCors({
@@ -18,6 +18,6 @@ async function bootstrap() {
       transform: true,
     }),
   );
-  await app.listen(process.env.PORT ?? 3000);
+  await app.listen(process.env.PORT ?? 5050);
 }
 bootstrap();

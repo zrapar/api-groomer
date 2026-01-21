@@ -22,6 +22,11 @@ services:
       JWT_ACCESS_SECRET: change_me
       JWT_REFRESH_SECRET: change_me_too
       CORS_ORIGIN: http://localhost:8080
+      FRONTEND_BASE_URL: http://localhost:8080
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:5050/api/v1/google-calendar/callback}
+      GOOGLE_OAUTH_STATE_SECRET: ${GOOGLE_OAUTH_STATE_SECRET:-change_me_state}
     ports:
       - "5050:3000"
     depends_on:

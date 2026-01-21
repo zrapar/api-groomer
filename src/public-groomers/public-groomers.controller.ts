@@ -1,0 +1,12 @@
+import { Controller, Get, Param } from "@nestjs/common";
+import { PublicGroomersService } from "./public-groomers.service";
+
+@Controller("api/v1/public/groomers")
+export class PublicGroomersController {
+  constructor(private readonly service: PublicGroomersService) {}
+
+  @Get("slug/:slug")
+  getBySlug(@Param("slug") slug: string) {
+    return this.service.getBySlug(slug);
+  }
+}

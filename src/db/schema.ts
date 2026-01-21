@@ -48,6 +48,8 @@ export const appointmentStatusEnum = pgEnum("appointment_status", [
   "NO_SHOW",
 ]);
 
+export const groomerPlanEnum = pgEnum("groomer_plan", ["FREE", "PRO"]);
+
 export const users = pgTable("users", {
   id: uuid("id").defaultRandom().primaryKey(),
   email: text("email").notNull().unique(),
@@ -68,8 +70,17 @@ export const groomerBusinesses = pgTable(
     ownerUserId: uuid("owner_user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
+    slug: text("slug").notNull().unique(),
     name: text("name").notNull(),
     description: text("description"),
+    logoUrl: text("logo_url"),
+    coverImageUrl: text("cover_image_url"),
+    plan: groomerPlanEnum("plan").notNull().default("FREE"),
+    googleRefreshToken: text("google_refresh_token"),
+    googleAccessToken: text("google_access_token"),
+    googleTokenExpiry: timestamp("google_token_expiry", { withTimezone: true }),
+    googleCalendarId: text("google_calendar_id"),
+    googleAccountEmail: text("google_account_email"),
     phone: text("phone").notNull(),
     email: text("email"),
     address: text("address").notNull(),
@@ -103,6 +114,7 @@ export const groomerBusinesses = pgTable(
     ownerUserIdIndex: index("groomer_business_owner_user_id_idx").on(
       table.ownerUserId,
     ),
+    slugIndex: index("groomer_business_slug_idx").on(table.slug),
   }),
 );
 
@@ -221,6 +233,7 @@ export const appointments = pgTable(
     clientId: uuid("client_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
+    googleEventId: text("google_event_id"),
     locationType: locationTypeEnum("location_type").notNull(),
     startTime: timestamp("start_time", { withTimezone: true }).notNull(),
     endTime: timestamp("end_time", { withTimezone: true }).notNull(),

@@ -88,6 +88,38 @@ export class AuthService {
     return this.issueTokens(user.id, user.email, user.role as UserRole);
   }
 
+  async loginLite(email: string, password?: string): Promise<AuthTokens> {
+    const normalizedEmail = email.toLowerCase();
+    const [user] = await this.db
+      .select({
+        id: schema.users.id,
+        email: schema.users.email,
+        role: schema.users.role,
+        passwordHash: schema.users.passwordHash,
+      })
+      .from(schema.users)
+      .where(eq(schema.users.email, normalizedEmail));
+
+    if (!user) {
+      return this.clientLogin(normalizedEmail);
+    }
+
+    if (user.role === UserRole.CLIENT) {
+      return this.issueTokens(user.id, user.email, user.role as UserRole);
+    }
+
+    if (!password) {
+      throw new UnauthorizedException("Password is required for this account.");
+    }
+
+    const isValid = await compare(password, user.passwordHash);
+    if (!isValid) {
+      throw new UnauthorizedException("Invalid credentials.");
+    }
+
+    return this.issueTokens(user.id, user.email, user.role as UserRole);
+  }
+
   async clientLogin(email: string): Promise<AuthTokens> {
     const normalizedEmail = email.toLowerCase();
     const existing = await this.db

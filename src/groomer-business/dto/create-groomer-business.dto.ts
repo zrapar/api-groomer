@@ -2,10 +2,12 @@ import {
   IsArray,
   IsBoolean,
   IsEmail,
+  IsIn,
   IsInt,
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
   Max,
   Min,
   ValidateNested,
@@ -17,9 +19,27 @@ export class CreateGroomerBusinessDto {
   @IsString()
   name: string;
 
+  @IsString()
+  @Matches(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, {
+    message: "slug must be lowercase and use hyphens only",
+  })
+  slug: string;
+
   @IsOptional()
   @IsString()
   description?: string;
+
+  @IsOptional()
+  @IsString()
+  logoUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  coverImageUrl?: string;
+
+  @IsOptional()
+  @IsIn(["FREE", "PRO"])
+  plan?: "FREE" | "PRO";
 
   @IsString()
   phone: string;
