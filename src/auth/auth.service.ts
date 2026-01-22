@@ -120,6 +120,31 @@ export class AuthService {
     return this.issueTokens(user.id, user.email, user.role as UserRole);
   }
 
+  async getEmailStatus(email: string) {
+    const normalizedEmail = email.toLowerCase();
+    const [user] = await this.db
+      .select({
+        id: schema.users.id,
+        role: schema.users.role,
+      })
+      .from(schema.users)
+      .where(eq(schema.users.email, normalizedEmail));
+
+    if (!user) {
+      return {
+        exists: false,
+        role: UserRole.CLIENT,
+        requiresPassword: false,
+      };
+    }
+
+    return {
+      exists: true,
+      role: user.role,
+      requiresPassword: user.role !== UserRole.CLIENT,
+    };
+  }
+
   async clientLogin(email: string): Promise<AuthTokens> {
     const normalizedEmail = email.toLowerCase();
     const existing = await this.db
