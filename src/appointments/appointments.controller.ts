@@ -17,10 +17,11 @@ import { AppointmentsService } from "./appointments.service";
 import { CreateAppointmentDto } from "./dto/create-appointment.dto";
 import { UpdateAppointmentStatusDto } from "./dto/update-appointment-status.dto";
 import { UpdateAppointmentDto } from "./dto/update-appointment.dto";
+import { CancelAppointmentDto } from "./dto/cancel-appointment.dto";
 
 @Controller("api/v1/appointments")
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(UserRole.CLIENT, UserRole.GROOMER_OWNER)
+@Roles(UserRole.CLIENT, UserRole.GROOMER_OWNER, UserRole.GROOMER_STAFF)
 export class AppointmentsController {
   constructor(private readonly service: AppointmentsService) {}
 
@@ -41,13 +42,22 @@ export class AppointmentsController {
   }
 
   @Patch(":id/status")
-  @Roles(UserRole.GROOMER_OWNER)
+  @Roles(UserRole.GROOMER_OWNER, UserRole.GROOMER_STAFF)
   updateStatus(
     @Req() req: { user: AuthUser },
     @Param("id") id: string,
     @Body() payload: UpdateAppointmentStatusDto,
   ) {
     return this.service.updateStatus(req.user, id, payload);
+  }
+
+  @Patch(":id/cancel")
+  cancel(
+    @Req() req: { user: AuthUser },
+    @Param("id") id: string,
+    @Body() payload: CancelAppointmentDto,
+  ) {
+    return this.service.cancel(req.user, id, payload);
   }
 
   @Patch(":id")

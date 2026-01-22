@@ -9,4 +9,14 @@ export class PublicGroomersController {
   getBySlug(@Param("slug") slug: string) {
     return this.service.getBySlug(slug);
   }
+
+  @Get("business/:businessId")
+  getBusiness(@Param("businessId") businessId: string) {
+    return this.service.getBusiness(businessId);
+  }
+
+  @Get(":businessId/staff")
+  getStaff(@Param("businessId") businessId: string) {
+    return this.service.getStaff(businessId);
+  }
 }

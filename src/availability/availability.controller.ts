@@ -9,7 +9,7 @@ import { AvailabilityRequestDto } from "./dto/availability.dto";
 
 @Controller("api/v1/groomers")
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(UserRole.CLIENT, UserRole.GROOMER_OWNER)
+@Roles(UserRole.CLIENT, UserRole.GROOMER_OWNER, UserRole.GROOMER_STAFF)
 export class AvailabilityController {
   constructor(private readonly service: AvailabilityService) {}
 

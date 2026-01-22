@@ -1,4 +1,11 @@
-import { ArrayNotEmpty, IsArray, IsEnum, IsString, ValidateNested } from "class-validator";
+import {
+  ArrayNotEmpty,
+  IsArray,
+  IsEnum,
+  IsOptional,
+  IsString,
+  ValidateNested,
+} from "class-validator";
 import { Type } from "class-transformer";
 import { ServiceLocation } from "../../services/dto/service.enums";
 
@@ -13,6 +20,10 @@ export class AvailabilityItemDto {
 export class AvailabilityRequestDto {
   @IsString()
   date: string;
+
+  @IsOptional()
+  @IsString()
+  groomerId?: string;
 
   @IsEnum(ServiceLocation)
   locationType: ServiceLocation;

@@ -223,6 +223,36 @@ export const serviceDurationRules = pgTable(
   }),
 );
 
+export const groomerStaffMembers = pgTable(
+  "groomer_staff_members",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => groomerBusinesses.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    displayName: text("display_name").notNull(),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    businessIdIndex: index("groomer_staff_members_business_id_idx").on(
+      table.businessId,
+    ),
+    businessUserUnique: index("groomer_staff_members_business_user_idx").on(
+      table.businessId,
+      table.userId,
+    ),
+  }),
+);
+
 export const appointments = pgTable(
   "appointments",
   {
@@ -233,6 +263,9 @@ export const appointments = pgTable(
     clientId: uuid("client_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
+    groomerId: uuid("groomer_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
     googleEventId: text("google_event_id"),
     locationType: locationTypeEnum("location_type").notNull(),
     startTime: timestamp("start_time", { withTimezone: true }).notNull(),

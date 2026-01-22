@@ -21,6 +21,7 @@ import { NotificationService } from "../notifications/notification.service";
 import { resolveDurationMinutes } from "../shared/duration";
 import { hasOverlap } from "../shared/overlap";
 import { GoogleCalendarService } from "../google-calendar/google-calendar.service";
+import { CancelAppointmentDto } from "./dto/cancel-appointment.dto";
 
 @Injectable()
 export class AppointmentsService {
@@ -43,6 +44,11 @@ export class AppointmentsService {
 
     const business = await this.getBusiness(payload.businessId);
     this.validateLocationSupported(business, payload.locationType);
+    const groomerId = await this.resolveGroomerId(
+      business.id,
+      business.ownerUserId,
+      payload.groomerId,
+    );
 
     if (payload.locationType === ServiceLocation.AT_HOME && !payload.homeAddress) {
       throw new BadRequestException("homeAddress is required for at-home visits.");
@@ -108,7 +114,7 @@ export class AppointmentsService {
 
     const endTime = new Date(startTime.getTime() + totalMinutes * 60000);
 
-    await this.ensureNoOverlap(business.id, startTime, endTime);
+    await this.ensureNoOverlap(business.id, groomerId, startTime, endTime);
 
     const created = await this.db.transaction(async (tx) => {
       const [appointment] = await tx
@@ -117,6 +123,7 @@ export class AppointmentsService {
           businessId: business.id,
           clientId: user.id,
           locationType: payload.locationType,
+          groomerId,
           startTime,
           endTime,
           status: AppointmentStatus.PENDING,
@@ -168,6 +175,14 @@ export class AppointmentsService {
       return this.buildAppointmentsWithDetails(appointments);
     }
 
+    if (user.role === UserRole.GROOMER_STAFF) {
+      const appointments = await this.db
+        .select()
+        .from(schema.appointments)
+        .where(eq(schema.appointments.groomerId, user.id));
+      return this.buildAppointmentsWithDetails(appointments);
+    }
+
     throw new ForbiddenException("Unsupported role for listing appointments.");
   }
 
@@ -192,6 +207,12 @@ export class AppointmentsService {
       }
     }
 
+    if (user.role === UserRole.GROOMER_STAFF) {
+      if (appointment.groomerId !== user.id) {
+        throw new ForbiddenException("You do not have access to this appointment.");
+      }
+    }
+
     const [detailed] = await this.buildAppointmentsWithDetails([appointment]);
     return detailed;
   }
@@ -201,7 +222,7 @@ export class AppointmentsService {
     appointmentId: string,
     payload: UpdateAppointmentStatusDto,
   ) {
-    const appointment = await this.getAppointmentForOwner(user, appointmentId);
+    const appointment = await this.getAppointmentForGroomer(user, appointmentId);
 
     const [updated] = await this.db
       .update(schema.appointments)
@@ -217,6 +238,75 @@ export class AppointmentsService {
       user.email,
       `Appointment ${appointmentId} status changed to ${payload.status}.`,
     );
+    void this.googleCalendar.syncAppointment(updated.id).catch((error) => {
+      console.warn("Google calendar sync failed", error);
+    });
+
+    return updated;
+  }
+
+  async cancel(
+    user: AuthUser,
+    appointmentId: string,
+    payload: CancelAppointmentDto,
+  ) {
+    const [appointment] = await this.db
+      .select()
+      .from(schema.appointments)
+      .where(eq(schema.appointments.id, appointmentId));
+
+    if (!appointment) {
+      throw new NotFoundException("Appointment not found.");
+    }
+
+    const business = await this.getBusiness(appointment.businessId);
+
+    if (appointment.status === AppointmentStatus.CANCELLED) {
+      return appointment;
+    }
+
+    if (user.role === UserRole.CLIENT) {
+      if (appointment.clientId !== user.id) {
+        throw new ForbiddenException("You do not have access to this appointment.");
+      }
+      if (![AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED].includes(appointment.status)) {
+        throw new BadRequestException("Appointment cannot be cancelled.");
+      }
+      const hoursDiff =
+        (appointment.startTime.getTime() - Date.now()) / 3600000;
+      if (hoursDiff < business.minHoursBeforeCancelOrReschedule) {
+        throw new BadRequestException("Too late to cancel this appointment.");
+      }
+    }
+
+    if (user.role === UserRole.GROOMER_OWNER) {
+      const ownerBusiness = await this.getBusinessForOwner(user.id);
+      if (appointment.businessId !== ownerBusiness.id) {
+        throw new ForbiddenException("You do not have access to this appointment.");
+      }
+    }
+
+    if (user.role === UserRole.GROOMER_STAFF) {
+      if (appointment.groomerId !== user.id) {
+        throw new ForbiddenException("You do not have access to this appointment.");
+      }
+    }
+
+    const [updated] = await this.db
+      .update(schema.appointments)
+      .set({
+        status: AppointmentStatus.CANCELLED,
+        cancelReason: payload.cancelReason ?? appointment.cancelReason,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.appointments.id, appointmentId))
+      .returning();
+
+    await this.notifications.sendEmail(
+      user.email,
+      `Appointment ${appointmentId} was cancelled.`,
+    );
+
     void this.googleCalendar.syncAppointment(updated.id).catch((error) => {
       console.warn("Google calendar sync failed", error);
     });
@@ -258,6 +348,12 @@ export class AppointmentsService {
       }
     }
 
+    if (user.role === UserRole.GROOMER_STAFF) {
+      if (appointment.groomerId !== user.id) {
+        throw new ForbiddenException("You do not have access to this appointment.");
+      }
+    }
+
     let newStartTime = appointment.startTime;
     let newEndTime = appointment.endTime;
 
@@ -271,7 +367,14 @@ export class AppointmentsService {
         (appointment.endTime.getTime() - appointment.startTime.getTime()) / 60000,
       );
       newEndTime = new Date(parsedStart.getTime() + durationMinutes * 60000);
-      await this.ensureNoOverlap(appointment.businessId, newStartTime, newEndTime, appointment.id);
+      const assignedGroomerId = appointment.groomerId ?? business.ownerUserId;
+      await this.ensureNoOverlap(
+        appointment.businessId,
+        assignedGroomerId,
+        newStartTime,
+        newEndTime,
+        appointment.id,
+      );
     }
 
     const [updated] = await this.db
@@ -361,6 +464,7 @@ export class AppointmentsService {
 
   private async ensureNoOverlap(
     businessId: string,
+    groomerId: string,
     startTime: Date,
     endTime: Date,
     excludeAppointmentId?: string,
@@ -376,6 +480,7 @@ export class AppointmentsService {
       .where(
         and(
           eq(schema.appointments.businessId, businessId),
+          eq(schema.appointments.groomerId, groomerId),
           lt(schema.appointments.startTime, endTime),
           gt(schema.appointments.endTime, startTime),
         ),
@@ -383,6 +488,49 @@ export class AppointmentsService {
     if (hasOverlap(overlaps, startTime, endTime, excludeAppointmentId)) {
       throw new BadRequestException("Time slot is not available.");
     }
+  }
+
+  private async resolveGroomerId(
+    businessId: string,
+    ownerUserId: string,
+    groomerId?: string,
+  ) {
+    if (!groomerId) {
+      const staffCount = await this.db
+        .select({ id: schema.groomerStaffMembers.id })
+        .from(schema.groomerStaffMembers)
+        .where(
+          and(
+            eq(schema.groomerStaffMembers.businessId, businessId),
+            eq(schema.groomerStaffMembers.isActive, true),
+          ),
+        );
+      if (staffCount.length > 0) {
+        throw new BadRequestException("groomerId is required for this business.");
+      }
+      return ownerUserId;
+    }
+
+    if (groomerId === ownerUserId) {
+      return groomerId;
+    }
+
+    const [staff] = await this.db
+      .select()
+      .from(schema.groomerStaffMembers)
+      .where(
+        and(
+          eq(schema.groomerStaffMembers.businessId, businessId),
+          eq(schema.groomerStaffMembers.userId, groomerId),
+          eq(schema.groomerStaffMembers.isActive, true),
+        ),
+      );
+
+    if (!staff) {
+      throw new BadRequestException("Invalid groomer selection.");
+    }
+
+    return groomerId;
   }
 
   private async getBusiness(businessId: string) {
@@ -423,12 +571,12 @@ export class AppointmentsService {
     return business;
   }
 
-  private async getAppointmentForOwner(user: AuthUser, appointmentId: string) {
-    if (user.role !== UserRole.GROOMER_OWNER) {
+  private async getAppointmentForGroomer(user: AuthUser, appointmentId: string) {
+    const role = user.role as UserRole;
+    if (![UserRole.GROOMER_OWNER, UserRole.GROOMER_STAFF].includes(role)) {
       throw new ForbiddenException("Only groomers can update status.");
     }
 
-    const business = await this.getBusinessForOwner(user.id);
     const [appointment] = await this.db
       .select()
       .from(schema.appointments)
@@ -438,8 +586,16 @@ export class AppointmentsService {
       throw new NotFoundException("Appointment not found.");
     }
 
-    if (appointment.businessId !== business.id) {
-      throw new ForbiddenException("Appointment does not belong to this business.");
+    if (user.role === UserRole.GROOMER_OWNER) {
+      const business = await this.getBusinessForOwner(user.id);
+      if (appointment.businessId !== business.id) {
+        throw new ForbiddenException("Appointment does not belong to this business.");
+      }
+      return appointment;
+    }
+
+    if (appointment.groomerId !== user.id) {
+      throw new ForbiddenException("Appointment does not belong to this groomer.");
     }
 
     return appointment;
@@ -495,6 +651,7 @@ export class AppointmentsService {
           name: string;
           phone: string;
           email: string | null;
+          minHoursBeforeCancelOrReschedule: number;
         } | null;
         items: Array<{
           appointmentPet: typeof schema.appointmentPets.$inferSelect;
@@ -542,6 +699,8 @@ export class AppointmentsService {
           name: row.business.name,
           phone: row.business.phone,
           email: row.business.email,
+          minHoursBeforeCancelOrReschedule:
+            row.business.minHoursBeforeCancelOrReschedule,
         };
       }
       current.items.push({

@@ -12,6 +12,7 @@ import { AppointmentsModule } from "./appointments/appointments.module";
 import { NotificationsModule } from "./notifications/notifications.module";
 import { PublicGroomersModule } from "./public-groomers/public-groomers.module";
 import { GoogleCalendarModule } from "./google-calendar/google-calendar.module";
+import { StaffModule } from "./staff/staff.module";
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { GoogleCalendarModule } from "./google-calendar/google-calendar.module";
     NotificationsModule,
     PublicGroomersModule,
     GoogleCalendarModule,
+    StaffModule,
   ],
   controllers: [AppController],
   providers: [AppService],

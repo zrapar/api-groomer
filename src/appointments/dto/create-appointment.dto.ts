@@ -14,6 +14,10 @@ export class CreateAppointmentDto {
   @IsString()
   businessId: string;
 
+  @IsOptional()
+  @IsString()
+  groomerId?: string;
+
   @IsEnum(ServiceLocation)
   locationType: ServiceLocation;
 

@@ -84,10 +84,17 @@ export class AvailabilityService {
       payload.locationType,
     );
 
+    const groomerId = await this.resolveGroomerId(
+      business.id,
+      business.ownerUserId,
+      payload.groomerId,
+    );
+
     const availability = await this.buildAvailability(
       business,
       payload.date,
       totalDurationMinutes,
+      groomerId,
     );
 
     return {
@@ -202,6 +209,7 @@ export class AvailabilityService {
     business: typeof schema.groomerBusinesses.$inferSelect,
     date: string,
     durationMinutes: number,
+    groomerId: string,
   ) {
     const dayStart = new Date(`${date}T00:00:00`);
     if (Number.isNaN(dayStart.getTime())) {
@@ -231,6 +239,7 @@ export class AvailabilityService {
       .where(
         and(
           eq(schema.appointments.businessId, business.id),
+          eq(schema.appointments.groomerId, groomerId),
           lt(schema.appointments.startTime, dayEnd),
           gt(schema.appointments.endTime, dayStart),
         ),
@@ -264,5 +273,48 @@ export class AvailabilityService {
     }
 
     return slots;
+  }
+
+  private async resolveGroomerId(
+    businessId: string,
+    ownerUserId: string,
+    groomerId?: string,
+  ) {
+    if (!groomerId) {
+      const staffCount = await this.db
+        .select({ id: schema.groomerStaffMembers.id })
+        .from(schema.groomerStaffMembers)
+        .where(
+          and(
+            eq(schema.groomerStaffMembers.businessId, businessId),
+            eq(schema.groomerStaffMembers.isActive, true),
+          ),
+        );
+      if (staffCount.length > 0) {
+        throw new BadRequestException("groomerId is required for this business.");
+      }
+      return ownerUserId;
+    }
+
+    if (groomerId === ownerUserId) {
+      return groomerId;
+    }
+
+    const [staff] = await this.db
+      .select()
+      .from(schema.groomerStaffMembers)
+      .where(
+        and(
+          eq(schema.groomerStaffMembers.businessId, businessId),
+          eq(schema.groomerStaffMembers.userId, groomerId),
+          eq(schema.groomerStaffMembers.isActive, true),
+        ),
+      );
+
+    if (!staff) {
+      throw new BadRequestException("Invalid groomer selection.");
+    }
+
+    return groomerId;
   }
 }
