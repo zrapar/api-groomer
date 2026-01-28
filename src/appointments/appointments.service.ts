@@ -55,7 +55,9 @@ export class AppointmentsService {
     }
 
     const petIds = payload.items.map((item) => item.petId);
-    const serviceIds = payload.items.map((item) => item.serviceId);
+    const serviceIds = Array.from(
+      new Set(payload.items.map((item) => item.serviceId)),
+    );
 
     const pets = await this.db
       .select()
@@ -269,7 +271,11 @@ export class AppointmentsService {
       if (appointment.clientId !== user.id) {
         throw new ForbiddenException("You do not have access to this appointment.");
       }
-      if (![AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED].includes(appointment.status)) {
+      if (
+        ![AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED].includes(
+          appointment.status as AppointmentStatus,
+        )
+      ) {
         throw new BadRequestException("Appointment cannot be cancelled.");
       }
       const hoursDiff =
@@ -684,6 +690,8 @@ export class AppointmentsService {
             name: row.business.name,
             phone: row.business.phone,
             email: row.business.email,
+            minHoursBeforeCancelOrReschedule:
+              row.business.minHoursBeforeCancelOrReschedule,
           };
         }
         continue;

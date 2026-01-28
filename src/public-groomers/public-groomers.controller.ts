@@ -5,6 +5,11 @@ import { PublicGroomersService } from "./public-groomers.service";
 export class PublicGroomersController {
   constructor(private readonly service: PublicGroomersService) {}
 
+  @Get()
+  listBusinesses() {
+    return this.service.listBusinesses();
+  }
+
   @Get("slug/:slug")
   getBySlug(@Param("slug") slug: string) {
     return this.service.getBySlug(slug);

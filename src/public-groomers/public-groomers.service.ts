@@ -1,5 +1,5 @@
 import { Inject, Injectable, NotFoundException } from "@nestjs/common";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { DRIZZLE_DB } from "../db/db.module";
 import * as schema from "../db/schema";
@@ -10,6 +10,25 @@ export class PublicGroomersService {
     @Inject(DRIZZLE_DB)
     private readonly db: NodePgDatabase<typeof schema>,
   ) {}
+
+  async listBusinesses() {
+    const businesses = await this.db
+      .select({
+        id: schema.groomerBusinesses.id,
+        name: schema.groomerBusinesses.name,
+        slug: schema.groomerBusinesses.slug,
+        logoUrl: schema.groomerBusinesses.logoUrl,
+        coverImageUrl: schema.groomerBusinesses.coverImageUrl,
+        address: schema.groomerBusinesses.address,
+        offersInSalon: schema.groomerBusinesses.offersInSalon,
+        offersAtHome: schema.groomerBusinesses.offersAtHome,
+        plan: schema.groomerBusinesses.plan,
+      })
+      .from(schema.groomerBusinesses)
+      .orderBy(asc(schema.groomerBusinesses.name));
+
+    return { businesses };
+  }
 
   async getBySlug(slug: string) {
     const [business] = await this.db

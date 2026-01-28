@@ -35,7 +35,9 @@ export class AvailabilityService {
 
     const items = payload.items;
     const petIds = items.map((item) => item.petId);
-    const serviceIds = items.map((item) => item.serviceId);
+    const serviceIds = Array.from(
+      new Set(items.map((item) => item.serviceId)),
+    );
 
     const pets = await this.db
       .select()

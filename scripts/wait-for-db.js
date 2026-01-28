@@ -45,9 +45,9 @@ const runCommand = (command, args) =>
 
 (async () => {
   await waitForDb();
-  await runCommand('npm', ['run', 'db:migrate']);
-  await runCommand('npm', ['run', 'db:seed']);
-  await runCommand('npm', ['run', 'start:dev']);
+  await runCommand('pnpm', ['run', 'db:migrate']);
+  await runCommand('pnpm', ['run', 'db:seed']);
+  await runCommand('pnpm', ['run', 'start:dev']);
 })().catch((error) => {
   console.error(error);
   process.exit(1);

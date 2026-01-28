@@ -13,6 +13,7 @@ import { NotificationsModule } from "./notifications/notifications.module";
 import { PublicGroomersModule } from "./public-groomers/public-groomers.module";
 import { GoogleCalendarModule } from "./google-calendar/google-calendar.module";
 import { StaffModule } from "./staff/staff.module";
+import { AdminModule } from "./admin/admin.module";
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { StaffModule } from "./staff/staff.module";
     PublicGroomersModule,
     GoogleCalendarModule,
     StaffModule,
+    AdminModule,
   ],
   controllers: [AppController],
   providers: [AppService],
