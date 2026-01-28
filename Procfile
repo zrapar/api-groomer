@@ -1,2 +1,2 @@
 release: npm run heroku-release
-web: npm start
+web: node dist/src/main.js

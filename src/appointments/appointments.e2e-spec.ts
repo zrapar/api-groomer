@@ -30,7 +30,10 @@ describe("Appointments flow", () => {
       throw new Error("TEST_DATABASE_URL is not set");
     }
     process.env.DATABASE_URL = testDatabaseUrl;
-    pool = new Pool({ connectionString: testDatabaseUrl });
+    pool = new Pool({
+      connectionString: testDatabaseUrl,
+      ssl: process.env.PGSSLMODE === "require" ? { rejectUnauthorized: false } : undefined,
+    });
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();

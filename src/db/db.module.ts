@@ -16,7 +16,10 @@ export const DRIZZLE_DB = Symbol('DRIZZLE_DB');
         if (!connectionString) {
           throw new Error('DATABASE_URL is not set');
         }
-        const pool = new Pool({ connectionString });
+        const pool = new Pool({
+          connectionString,
+          ssl: process.env.PGSSLMODE === 'require' ? { rejectUnauthorized: false } : undefined,
+        });
         return drizzle(pool, { schema });
       },
     },

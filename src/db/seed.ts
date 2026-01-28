@@ -59,7 +59,10 @@ async function main() {
     throw new Error('DATABASE_URL is not set');
   }
 
-  const pool = new Pool({ connectionString: databaseUrl });
+  const pool = new Pool({
+    connectionString: databaseUrl,
+    ssl: process.env.PGSSLMODE === 'require' ? { rejectUnauthorized: false } : undefined,
+  });
   const db = drizzle(pool, { schema });
 
   const adminEmail = process.env.SEED_ADMIN_EMAIL || 'root@groomer.local';
