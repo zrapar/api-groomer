@@ -17,7 +17,7 @@
     "start:debug": "nest start --debug --watch",
     "start:prod": "node dist/src/main.js",
     "heroku-postbuild": "npm run build",
-    "heroku-release": "node dist/src/db/seed.js",
+    "heroku-release": "drizzle-kit migrate && node dist/src/db/seed.js",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "jest",
     "test:watch": "jest --watch",
