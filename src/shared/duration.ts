@@ -1,5 +1,5 @@
-type Species = "DOG" | "CAT";
-type Size = "MINI" | "SMALL" | "MEDIUM" | "LARGE" | "GIANT";
+type Species = 'DOG' | 'CAT';
+type Size = 'MINI' | 'SMALL' | 'MEDIUM' | 'LARGE' | 'GIANT';
 
 type DurationRule = {
   species: Species;

@@ -1,5 +1,12 @@
-import { IsBoolean, IsEnum, IsInt, IsOptional, IsString, Min } from "class-validator";
-import { PetSize, PetSpecies } from "../../pets/dto/pet.enums";
+import {
+  IsBoolean,
+  IsEnum,
+  IsInt,
+  IsOptional,
+  IsString,
+  Min,
+} from 'class-validator';
+import { PetSize, PetSpecies } from '../../pets/dto/pet.enums';
 
 export class CreateServiceDurationRuleDto {
   @IsEnum(PetSpecies)

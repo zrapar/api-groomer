@@ -1,62 +1,35 @@
-import { Inject, Injectable, NotFoundException } from "@nestjs/common";
-import { and, asc, eq } from "drizzle-orm";
-import type { NodePgDatabase } from "drizzle-orm/node-postgres";
-import { DRIZZLE_DB } from "../db/db.module";
-import * as schema from "../db/schema";
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { BusinessRepository } from '../repositories/business.repository';
+import { ServiceRepository } from '../repositories/service.repository';
+import { StaffRepository } from '../repositories/staff.repository';
+import { UserRepository } from '../repositories/user.repository';
 
 @Injectable()
 export class PublicGroomersService {
   constructor(
-    @Inject(DRIZZLE_DB)
-    private readonly db: NodePgDatabase<typeof schema>,
+    private readonly businessRepo: BusinessRepository,
+    private readonly serviceRepo: ServiceRepository,
+    private readonly staffRepo: StaffRepository,
+    private readonly userRepo: UserRepository,
   ) {}
 
-  async listBusinesses() {
-    const businesses = await this.db
-      .select({
-        id: schema.groomerBusinesses.id,
-        name: schema.groomerBusinesses.name,
-        slug: schema.groomerBusinesses.slug,
-        logoUrl: schema.groomerBusinesses.logoUrl,
-        coverImageUrl: schema.groomerBusinesses.coverImageUrl,
-        address: schema.groomerBusinesses.address,
-        offersInSalon: schema.groomerBusinesses.offersInSalon,
-        offersAtHome: schema.groomerBusinesses.offersAtHome,
-        plan: schema.groomerBusinesses.plan,
-      })
-      .from(schema.groomerBusinesses)
-      .orderBy(asc(schema.groomerBusinesses.name));
-
+  async listBusinesses(limit = 100, offset = 0) {
+    const businesses = await this.businessRepo.findAll(limit, offset);
     return { businesses };
   }
 
   async getBySlug(slug: string) {
-    const [business] = await this.db
-      .select()
-      .from(schema.groomerBusinesses)
-      .where(eq(schema.groomerBusinesses.slug, slug));
+    // findBySlug only returns PUBLIC_BUSINESS_COLUMNS — no Google tokens
+    const business = await this.businessRepo.findBySlug(slug);
+    if (!business) throw new NotFoundException('Business not found.');
 
-    if (!business) {
-      throw new NotFoundException("Business not found.");
-    }
-
-    const services = await this.db
-      .select()
-      .from(schema.services)
-      .where(eq(schema.services.businessId, business.id));
-
+    const services = await this.serviceRepo.findActiveByBusinessId(business.id);
     return { business, services };
   }
 
   async getBusiness(businessId: string) {
-    const [business] = await this.db
-      .select()
-      .from(schema.groomerBusinesses)
-      .where(eq(schema.groomerBusinesses.id, businessId));
-
-    if (!business) {
-      throw new NotFoundException("Business not found.");
-    }
+    const business = await this.businessRepo.findById(businessId);
+    if (!business) throw new NotFoundException('Business not found.');
 
     return {
       business: {
@@ -76,44 +49,13 @@ export class PublicGroomersService {
   }
 
   async getStaff(businessId: string) {
-    const [business] = await this.db
-      .select()
-      .from(schema.groomerBusinesses)
-      .where(eq(schema.groomerBusinesses.id, businessId));
+    const business = await this.businessRepo.findById(businessId);
+    if (!business) throw new NotFoundException('Business not found.');
 
-    if (!business) {
-      throw new NotFoundException("Business not found.");
-    }
+    const activeStaff = await this.staffRepo.findActiveByBusinessId(businessId);
+    const owner = await this.userRepo.findById(business.ownerUserId);
 
-    const staffRows = await this.db
-      .select({
-        staff: schema.groomerStaffMembers,
-        user: schema.users,
-      })
-      .from(schema.groomerStaffMembers)
-      .innerJoin(
-        schema.users,
-        eq(schema.users.id, schema.groomerStaffMembers.userId),
-      )
-      .where(
-        and(
-          eq(schema.groomerStaffMembers.businessId, businessId),
-          eq(schema.groomerStaffMembers.isActive, true),
-        ),
-      );
-
-    const staff = staffRows.map((row) => ({
-      id: row.user.id,
-      displayName: row.staff.displayName,
-      email: row.user.email,
-      isOwner: false,
-    }));
-
-    const [owner] = await this.db
-      .select()
-      .from(schema.users)
-      .where(eq(schema.users.id, business.ownerUserId));
-
+    const staff = activeStaff.map((s) => ({ ...s, isOwner: false }));
     const ownerEntry = owner
       ? {
           id: owner.id,
@@ -123,9 +65,6 @@ export class PublicGroomersService {
         }
       : null;
 
-    return {
-      businessId,
-      staff: ownerEntry ? [ownerEntry, ...staff] : staff,
-    };
+    return { businessId, staff: ownerEntry ? [ownerEntry, ...staff] : staff };
   }
 }

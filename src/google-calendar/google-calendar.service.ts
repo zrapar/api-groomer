@@ -1,46 +1,42 @@
 import {
   BadRequestException,
-  Inject,
   Injectable,
+  Logger,
   NotFoundException,
-} from "@nestjs/common";
-import { JwtService } from "@nestjs/jwt";
-import { google } from "googleapis";
-import { eq } from "drizzle-orm";
-import type { NodePgDatabase } from "drizzle-orm/node-postgres";
-import { DRIZZLE_DB } from "../db/db.module";
-import * as schema from "../db/schema";
+} from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { google } from 'googleapis';
+import { BusinessRepository } from '../repositories/business.repository';
+import { AppointmentRepository } from '../repositories/appointment.repository';
+import { EncryptionService } from '../common/encryption.service';
+import * as schema from '../db/schema';
 
-type OAuthState = {
-  sub: string;
-  businessId: string;
-};
+type OAuthState = { sub: string; businessId: string };
 
 @Injectable()
 export class GoogleCalendarService {
+  private readonly logger = new Logger(GoogleCalendarService.name);
+
   constructor(
-    @Inject(DRIZZLE_DB)
-    private readonly db: NodePgDatabase<typeof schema>,
+    private readonly businessRepo: BusinessRepository,
+    private readonly appointmentRepo: AppointmentRepository,
     private readonly jwtService: JwtService,
+    private readonly encryption: EncryptionService,
   ) {}
 
   async getAuthUrl(ownerId: string) {
-    const business = await this.getBusinessForOwner(ownerId);
+    const business = await this.getBusinessOrFail(ownerId);
     const client = this.getOAuthClient();
     const state = this.jwtService.sign(
       { sub: ownerId, businessId: business.id } satisfies OAuthState,
-      {
-        secret: this.getStateSecret(),
-        expiresIn: "10m",
-      },
+      { secret: this.getStateSecret(), expiresIn: '10m' },
     );
-
     return client.generateAuthUrl({
-      access_type: "offline",
-      prompt: "consent",
+      access_type: 'offline',
+      prompt: 'consent',
       scope: [
-        "https://www.googleapis.com/auth/calendar",
-        "https://www.googleapis.com/auth/userinfo.email",
+        'https://www.googleapis.com/auth/calendar',
+        'https://www.googleapis.com/auth/userinfo.email',
       ],
       state,
     });
@@ -48,77 +44,83 @@ export class GoogleCalendarService {
 
   async handleCallback(code: string, state: string) {
     const payload = this.verifyState(state);
-    const business = await this.getBusinessById(payload.businessId);
+    const business = await this.businessRepo.findById(payload.businessId);
+    if (!business) throw new NotFoundException('Business not found.');
+
     const client = this.getOAuthClient();
     const { tokens } = await client.getToken(code);
 
     if (!tokens.refresh_token && !business.googleRefreshToken) {
-      throw new BadRequestException("Missing refresh token from Google.");
+      throw new BadRequestException('Missing refresh token from Google.');
     }
 
     client.setCredentials(tokens);
-    const oauth2 = google.oauth2({ version: "v2", auth: client });
+    const oauth2 = google.oauth2({ version: 'v2', auth: client });
     const profile = await oauth2.userinfo.get();
 
-    await this.db
-      .update(schema.groomerBusinesses)
-      .set({
-        googleRefreshToken:
-          tokens.refresh_token ?? business.googleRefreshToken ?? null,
-        googleAccessToken: tokens.access_token ?? null,
-        googleTokenExpiry: tokens.expiry_date
-          ? new Date(tokens.expiry_date)
-          : null,
-        googleCalendarId: business.googleCalendarId ?? "primary",
-        googleAccountEmail: profile.data.email ?? null,
-        updatedAt: new Date(),
-      })
-      .where(eq(schema.groomerBusinesses.id, business.id));
+    const refreshToken =
+      tokens.refresh_token ?? business.googleRefreshToken ?? null;
+    await this.businessRepo.updateGoogleTokens(business.id, {
+      refreshToken: refreshToken ? this.encryption.encrypt(refreshToken) : null,
+      accessToken: tokens.access_token
+        ? this.encryption.encrypt(tokens.access_token)
+        : null,
+      tokenExpiry: tokens.expiry_date ? new Date(tokens.expiry_date) : null,
+      calendarId: business.googleCalendarId ?? 'primary',
+      accountEmail: profile.data.email ?? null,
+    });
 
     return business;
   }
 
   async getStatus(ownerId: string) {
-    const business = await this.getBusinessForOwner(ownerId);
+    const business = await this.getBusinessOrFail(ownerId);
     return {
       connected: Boolean(business.googleRefreshToken),
-      calendarId: business.googleCalendarId ?? "primary",
+      calendarId: business.googleCalendarId ?? 'primary',
       accountEmail: business.googleAccountEmail ?? null,
     };
   }
 
   async disconnect(ownerId: string) {
-    const business = await this.getBusinessForOwner(ownerId);
-    await this.db
-      .update(schema.groomerBusinesses)
-      .set({
-        googleRefreshToken: null,
-        googleAccessToken: null,
-        googleTokenExpiry: null,
-        googleCalendarId: null,
-        googleAccountEmail: null,
-        updatedAt: new Date(),
-      })
-      .where(eq(schema.groomerBusinesses.id, business.id));
+    const business = await this.getBusinessOrFail(ownerId);
+    await this.businessRepo.clearGoogleTokens(business.id);
   }
 
-  async syncAppointment(appointmentId: string) {
-    const appointment = await this.getAppointmentDetails(appointmentId);
-    if (!appointment) {
-      throw new NotFoundException("Appointment not found.");
+  async syncAppointment(appointmentId: string, attempt = 1): Promise<void> {
+    try {
+      await this.syncAppointmentInternal(appointmentId);
+    } catch (error) {
+      if (attempt < 3) {
+        const delay = attempt * 2000;
+        this.logger.warn(
+          `Google Calendar sync failed (attempt ${attempt}/3), retrying in ${delay}ms: ${(error as Error).message}`,
+        );
+        await new Promise((r) => setTimeout(r, delay));
+        return this.syncAppointment(appointmentId, attempt + 1);
+      }
+      this.logger.error(
+        `Google Calendar sync failed after 3 attempts for appointment ${appointmentId}: ${(error as Error).message}`,
+      );
     }
-    const business = appointment.business;
-    if (!business.googleRefreshToken) {
-      return;
-    }
+  }
 
-    const calendarId = business.googleCalendarId ?? "primary";
+  private async syncAppointmentInternal(appointmentId: string) {
+    const appointment =
+      await this.appointmentRepo.findWithDetailsById(appointmentId);
+    if (!appointment) throw new NotFoundException('Appointment not found.');
+    if (!appointment.business?.id) return;
+
+    const business = await this.businessRepo.findById(appointment.business.id);
+    if (!business?.googleRefreshToken) return;
+
+    const calendarId = business.googleCalendarId ?? 'primary';
     const client = await this.getAuthorizedClient(business);
-    const calendar = google.calendar({ version: "v3", auth: client });
+    const calendar = google.calendar({ version: 'v3', auth: client });
 
     if (
-      appointment.status === "CANCELLED" ||
-      appointment.status === "NO_SHOW"
+      appointment.status === 'CANCELLED' ||
+      appointment.status === 'NO_SHOW'
     ) {
       if (appointment.googleEventId) {
         try {
@@ -127,7 +129,9 @@ export class GoogleCalendarService {
             eventId: appointment.googleEventId,
           });
         } catch (error) {
-          console.warn("Google calendar delete failed", error);
+          this.logger.warn(
+            `Google calendar delete failed: ${(error as Error).message}`,
+          );
         }
       }
       return;
@@ -135,11 +139,11 @@ export class GoogleCalendarService {
 
     const description = this.buildDescription(appointment);
     const event = {
-      summary: `Cita ${appointment.locationType === "AT_HOME" ? "Domicilio" : "Salon"}`,
+      summary: `Cita ${appointment.locationType === 'AT_HOME' ? 'Domicilio' : 'Salon'}`,
       description,
       location:
-        appointment.locationType === "AT_HOME"
-          ? appointment.homeAddress ?? business.address
+        appointment.locationType === 'AT_HOME'
+          ? (appointment.homeAddress ?? business.address)
           : business.address,
       start: { dateTime: appointment.startTime.toISOString() },
       end: { dateTime: appointment.endTime.toISOString() },
@@ -157,26 +161,61 @@ export class GoogleCalendarService {
         requestBody: event,
       });
       if (created.data.id) {
-        await this.db
-          .update(schema.appointments)
-          .set({ googleEventId: created.data.id })
-          .where(eq(schema.appointments.id, appointment.id));
+        await this.appointmentRepo.update(appointment.id, {
+          googleEventId: created.data.id,
+        });
       }
     }
   }
 
+  private async getAuthorizedClient(
+    business: typeof schema.groomerBusinesses.$inferSelect,
+  ) {
+    const client = this.getOAuthClient();
+    client.setCredentials({
+      refresh_token: business.googleRefreshToken
+        ? this.encryption.decrypt(business.googleRefreshToken)
+        : undefined,
+      access_token: business.googleAccessToken
+        ? this.encryption.decrypt(business.googleAccessToken)
+        : undefined,
+      expiry_date: business.googleTokenExpiry?.getTime(),
+    });
+
+    client.on('tokens', (tokens) => {
+      this.businessRepo
+        .updateGoogleTokens(business.id, {
+          accessToken: tokens.access_token ?? business.googleAccessToken,
+          tokenExpiry: tokens.expiry_date
+            ? new Date(tokens.expiry_date)
+            : undefined,
+          refreshToken: tokens.refresh_token ?? business.googleRefreshToken,
+        })
+        .catch((err) =>
+          this.logger.error(
+            `Failed to persist Google tokens: ${(err as Error).message}`,
+          ),
+        );
+    });
+
+    await client.getAccessToken();
+    return client;
+  }
+
   private getOAuthClient() {
-    const clientId = process.env.GOOGLE_CLIENT_ID;
-    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-    const redirectUri = process.env.GOOGLE_REDIRECT_URI;
+    const {
+      GOOGLE_CLIENT_ID: clientId,
+      GOOGLE_CLIENT_SECRET: clientSecret,
+      GOOGLE_REDIRECT_URI: redirectUri,
+    } = process.env;
     if (!clientId || !clientSecret || !redirectUri) {
-      throw new BadRequestException("Google OAuth is not configured.");
+      throw new BadRequestException('Google OAuth is not configured.');
     }
     return new google.auth.OAuth2(clientId, clientSecret, redirectUri);
   }
 
   private getStateSecret() {
-    return process.env.GOOGLE_OAUTH_STATE_SECRET || "change_me_state";
+    return process.env.GOOGLE_OAUTH_STATE_SECRET || 'change_me_state';
   }
 
   private verifyState(state: string) {
@@ -185,130 +224,32 @@ export class GoogleCalendarService {
     });
   }
 
-  private async getAuthorizedClient(
-    business: typeof schema.groomerBusinesses.$inferSelect,
-  ) {
-    const client = this.getOAuthClient();
-    client.setCredentials({
-      refresh_token: business.googleRefreshToken ?? undefined,
-      access_token: business.googleAccessToken ?? undefined,
-      expiry_date: business.googleTokenExpiry?.getTime(),
-    });
-
-    client.on("tokens", (tokens) => {
-      void this.db
-        .update(schema.groomerBusinesses)
-        .set({
-          googleAccessToken: tokens.access_token ?? business.googleAccessToken,
-          googleTokenExpiry: tokens.expiry_date
-            ? new Date(tokens.expiry_date)
-            : business.googleTokenExpiry,
-          googleRefreshToken:
-            tokens.refresh_token ?? business.googleRefreshToken,
-          updatedAt: new Date(),
-        })
-        .where(eq(schema.groomerBusinesses.id, business.id));
-    });
-
-    await client.getAccessToken();
-    return client;
-  }
-
-  private async getBusinessForOwner(ownerId: string) {
-    const [business] = await this.db
-      .select()
-      .from(schema.groomerBusinesses)
-      .where(eq(schema.groomerBusinesses.ownerUserId, ownerId));
-
-    if (!business) {
-      throw new NotFoundException("Business not found for this owner.");
-    }
+  private async getBusinessOrFail(ownerId: string) {
+    const business = await this.businessRepo.findByOwnerId(ownerId);
+    if (!business)
+      throw new NotFoundException('Business not found for this owner.');
     return business;
-  }
-
-  private async getBusinessById(businessId: string) {
-    const [business] = await this.db
-      .select()
-      .from(schema.groomerBusinesses)
-      .where(eq(schema.groomerBusinesses.id, businessId));
-
-    if (!business) {
-      throw new NotFoundException("Business not found.");
-    }
-    return business;
-  }
-
-  private async getAppointmentDetails(appointmentId: string) {
-    const rows = await this.db
-      .select({
-        appointment: schema.appointments,
-        appointmentPet: schema.appointmentPets,
-        pet: schema.pets,
-        service: schema.services,
-        client: schema.users,
-        business: schema.groomerBusinesses,
-      })
-      .from(schema.appointments)
-      .leftJoin(
-        schema.appointmentPets,
-        eq(schema.appointmentPets.appointmentId, schema.appointments.id),
-      )
-      .leftJoin(schema.pets, eq(schema.pets.id, schema.appointmentPets.petId))
-      .leftJoin(
-        schema.services,
-        eq(schema.services.id, schema.appointmentPets.serviceId),
-      )
-      .leftJoin(schema.users, eq(schema.users.id, schema.appointments.clientId))
-      .leftJoin(
-        schema.groomerBusinesses,
-        eq(schema.groomerBusinesses.id, schema.appointments.businessId),
-      )
-      .where(eq(schema.appointments.id, appointmentId));
-
-    if (rows.length === 0) {
-      return null;
-    }
-
-    const base = rows[0];
-    if (!base.business) {
-      throw new NotFoundException("Business not found.");
-    }
-
-    return {
-      ...base.appointment,
-      client: base.client,
-      business: base.business!,
-      items: rows
-        .filter((row) => row.appointmentPet)
-        .map((row) => ({
-          pet: row.pet,
-          service: row.service,
-          appointmentPet: row.appointmentPet,
-        })),
-    };
   }
 
   private buildDescription(appointment: {
-    client: typeof schema.users.$inferSelect | null;
+    client: { email: string } | null;
     items: Array<{
-      pet: typeof schema.pets.$inferSelect | null;
-      service: typeof schema.services.$inferSelect | null;
+      pet: { name: string; species: string } | null;
+      service: { name: string } | null;
     }>;
     status: string;
   }) {
     const lines: string[] = [];
-    if (appointment.client?.email) {
+    if (appointment.client?.email)
       lines.push(`Cliente: ${appointment.client.email}`);
-    }
     lines.push(`Estado: ${appointment.status}`);
     for (const item of appointment.items) {
-      if (!item.pet || !item.service) {
-        continue;
+      if (item.pet && item.service) {
+        lines.push(
+          `Mascota: ${item.pet.name} (${item.pet.species}) - Servicio: ${item.service.name}`,
+        );
       }
-      lines.push(
-        `Mascota: ${item.pet.name} (${item.pet.species}) - Servicio: ${item.service.name}`,
-      );
     }
-    return lines.join("\n");
+    return lines.join('\n');
   }
 }

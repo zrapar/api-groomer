@@ -8,6 +8,7 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
 
@@ -111,7 +112,7 @@ export const groomerBusinesses = pgTable(
       .defaultNow(),
   },
   (table) => ({
-    ownerUserIdIndex: index('groomer_business_owner_user_id_idx').on(
+    ownerUserIdUnique: uniqueIndex('groomer_business_owner_user_id_unique').on(
       table.ownerUserId,
     ),
     slugIndex: index('groomer_business_slug_idx').on(table.slug),
@@ -180,6 +181,8 @@ export const services = pgTable(
     description: text('description').notNull(),
     speciesSupported: text('species_supported').array().notNull(),
     locationsSupported: text('locations_supported').array().notNull(),
+    priceAmount: numeric('price_amount', { precision: 10, scale: 2 }),
+    priceCurrency: text('price_currency').notNull().default('EUR'),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
@@ -286,6 +289,25 @@ export const appointments = pgTable(
       table.startTime,
     ),
     clientIdIndex: index('appointments_client_id_idx').on(table.clientId),
+  }),
+);
+
+export const refreshTokens = pgTable(
+  'refresh_tokens',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    tokenHash: text('token_hash').notNull().unique(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    userIdIndex: index('refresh_tokens_user_id_idx').on(table.userId),
   }),
 );
 

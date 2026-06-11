@@ -15,7 +15,7 @@ export function hasOverlap(
     if (excludeId && appt.id === excludeId) {
       return false;
     }
-    if (appt.status === "CANCELLED") {
+    if (appt.status === 'CANCELLED' || appt.status === 'NO_SHOW') {
       return false;
     }
     return startTime < appt.endTime && endTime > appt.startTime;

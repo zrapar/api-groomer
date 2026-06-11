@@ -53,22 +53,11 @@ type ClientSeed = {
   }>;
 };
 
-async function main() {
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) {
-    throw new Error('DATABASE_URL is not set');
-  }
-
-  const pool = new Pool({
-    connectionString: databaseUrl,
-    ssl: process.env.PGSSLMODE === 'require' ? { rejectUnauthorized: false } : undefined,
-  });
-  const db = drizzle(pool, { schema });
-
+export async function runSeed(db: ReturnType<typeof drizzle>) {
   const adminEmail = process.env.SEED_ADMIN_EMAIL || 'root@groomer.local';
   const adminPassword = process.env.SEED_ADMIN_PASSWORD || DEFAULT_PASSWORD;
   const seedDemoData =
-    (process.env.SEED_DEMO_DATA || 'true').toLowerCase() === 'true';
+    (process.env.SEED_DEMO_DATA || 'false').toLowerCase() === 'true';
   const seedReset =
     (process.env.SEED_RESET || 'false').toLowerCase() === 'true';
   const seedForcePasswords =
@@ -399,14 +388,25 @@ async function main() {
     await seedAppointments(db);
   }
 
-  // keep linter happy
-  void admin;
-
-  await pool.end();
   console.log(
     `Seed complete. Demo data: ${seedDemoData ? 'enabled' : 'disabled'}`,
   );
   logSeedAccounts(createdAccounts);
+}
+
+async function main() {
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) throw new Error('DATABASE_URL is not set');
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call
+  const pool = new Pool({
+    connectionString: databaseUrl,
+    ssl: process.env.PGSSLMODE === 'require' ? { rejectUnauthorized: false } : undefined,
+  });
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+  const db = drizzle(pool, { schema });
+  await runSeed(db);
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+  await (pool as unknown as { end: () => Promise<void> }).end();
 }
 
 async function seedBusinesses(params: {

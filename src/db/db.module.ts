@@ -16,10 +16,15 @@ export const DRIZZLE_DB = Symbol('DRIZZLE_DB');
         if (!connectionString) {
           throw new Error('DATABASE_URL is not set');
         }
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call
         const pool = new Pool({
           connectionString,
-          ssl: process.env.PGSSLMODE === 'require' ? { rejectUnauthorized: false } : undefined,
+          ssl:
+            process.env.PGSSLMODE === 'require'
+              ? { rejectUnauthorized: false }
+              : undefined,
         });
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         return drizzle(pool, { schema });
       },
     },

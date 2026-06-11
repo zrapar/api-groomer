@@ -8,12 +8,11 @@ import {
   IsOptional,
   IsString,
   Matches,
-  Max,
   Min,
   ValidateNested,
-} from "class-validator";
-import { Type } from "class-transformer";
-import { WorkingHourDto } from "./working-hour.dto";
+} from 'class-validator';
+import { Type } from 'class-transformer';
+import { WorkingHourDto } from './working-hour.dto';
 
 export class CreateGroomerBusinessDto {
   @IsString()
@@ -21,7 +20,7 @@ export class CreateGroomerBusinessDto {
 
   @IsString()
   @Matches(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, {
-    message: "slug must be lowercase and use hyphens only",
+    message: 'slug must be lowercase and use hyphens only',
   })
   slug: string;
 
@@ -38,8 +37,8 @@ export class CreateGroomerBusinessDto {
   coverImageUrl?: string;
 
   @IsOptional()
-  @IsIn(["FREE", "PRO"])
-  plan?: "FREE" | "PRO";
+  @IsIn(['FREE', 'PRO'])
+  plan?: 'FREE' | 'PRO';
 
   @IsString()
   phone: string;

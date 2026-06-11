@@ -1,11 +1,14 @@
-import { Inject, Injectable } from "@nestjs/common";
-import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
-import type { NodePgDatabase } from "drizzle-orm/node-postgres";
-import type { AnyPgTable } from "drizzle-orm/pg-core";
-import { DRIZZLE_DB } from "../db/db.module";
-import * as schema from "../db/schema";
-import { UserRole } from "../auth/dto/user-role.enum";
+import { Inject, Injectable } from '@nestjs/common';
+import { and, desc, eq, gte, lte, sql } from 'drizzle-orm';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import type { AnyPgTable } from 'drizzle-orm/pg-core';
+import { DRIZZLE_DB } from '../db/db.module';
+import * as schema from '../db/schema';
+import { UserRole } from '../auth/dto/user-role.enum';
 
+// Admin queries are analytics-only (aggregations, counts, joins across many tables).
+// They live here as raw Drizzle queries rather than in a repository intentionally —
+// they don't represent standard CRUD operations on a single entity.
 @Injectable()
 export class AdminService {
   constructor(
@@ -43,10 +46,7 @@ export class AdminService {
       this.countAll(schema.services),
       this.countAll(schema.appointments),
       this.db
-        .select({
-          role: schema.users.role,
-          count: sql<number>`count(*)`,
-        })
+        .select({ role: schema.users.role, count: sql<number>`count(*)` })
         .from(schema.users)
         .groupBy(schema.users.role),
       this.db
@@ -120,7 +120,10 @@ export class AdminService {
           schema.groomerBusinesses,
           eq(schema.appointments.businessId, schema.groomerBusinesses.id),
         )
-        .leftJoin(schema.users, eq(schema.appointments.clientId, schema.users.id))
+        .leftJoin(
+          schema.users,
+          eq(schema.appointments.clientId, schema.users.id),
+        )
         .orderBy(desc(schema.appointments.startTime))
         .limit(10),
     ]);
@@ -133,9 +136,12 @@ export class AdminService {
         services: servicesTotal,
         appointments: appointmentsTotal,
       },
-      usersByRole: this.mapCountRows(usersByRoleRows, "role"),
-      businessesByPlan: this.mapCountRows(businessesByPlanRows, "plan"),
-      appointmentsByStatus: this.mapCountRows(appointmentsByStatusRows, "status"),
+      usersByRole: this.mapCountRows(usersByRoleRows, 'role'),
+      businessesByPlan: this.mapCountRows(businessesByPlanRows, 'plan'),
+      appointmentsByStatus: this.mapCountRows(
+        appointmentsByStatusRows,
+        'status',
+      ),
       appointmentsToday: Number(todayAppointments[0]?.count ?? 0),
       appointmentsNext7Days: Number(nextWeekAppointments[0]?.count ?? 0),
       recentUsers,
@@ -145,7 +151,7 @@ export class AdminService {
   }
 
   async getUsers(role?: UserRole) {
-    const baseSelect = this.db
+    const query = this.db
       .select({
         id: schema.users.id,
         email: schema.users.email,
@@ -155,10 +161,9 @@ export class AdminService {
       .from(schema.users)
       .orderBy(desc(schema.users.createdAt))
       .limit(100);
-
     const users = role
-      ? await baseSelect.where(eq(schema.users.role, role))
-      : await baseSelect;
+      ? await query.where(eq(schema.users.role, role))
+      : await query;
     return { users };
   }
 
@@ -175,11 +180,9 @@ export class AdminService {
   ) {
     const result: Record<string, number> = {};
     for (const row of rows) {
-      const label = String(row[key]);
-      const count = Number(
-        (row as unknown as { count?: number | string }).count ?? 0,
+      result[String(row[key])] = Number(
+        (row as { count?: number | string }).count ?? 0,
       );
-      result[label] = count;
     }
     return result;
   }

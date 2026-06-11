@@ -1,8 +1,8 @@
-import { IsOptional, IsString } from "class-validator";
+import { IsDateString, IsOptional, IsString } from 'class-validator';
 
 export class UpdateAppointmentDto {
   @IsOptional()
-  @IsString()
+  @IsDateString()
   startTime?: string;
 
   @IsOptional()

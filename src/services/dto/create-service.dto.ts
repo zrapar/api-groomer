@@ -1,5 +1,15 @@
-import { IsArray, IsBoolean, IsEnum, IsString, ArrayNotEmpty } from "class-validator";
-import { ServiceLocation, ServiceSpecies } from "./service.enums";
+import {
+  IsArray,
+  IsBoolean,
+  IsEnum,
+  IsNumber,
+  IsOptional,
+  IsString,
+  ArrayNotEmpty,
+  Length,
+  Min,
+} from 'class-validator';
+import { ServiceLocation, ServiceSpecies } from './service.enums';
 
 export class CreateServiceDto {
   @IsString()
@@ -17,6 +27,16 @@ export class CreateServiceDto {
   @ArrayNotEmpty()
   @IsEnum(ServiceLocation, { each: true })
   locationsSupported: ServiceLocation[];
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  priceAmount?: number;
+
+  @IsOptional()
+  @IsString()
+  @Length(3, 3)
+  priceCurrency?: string;
 
   @IsBoolean()
   isActive: boolean;

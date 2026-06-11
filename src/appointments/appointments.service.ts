@@ -1,94 +1,105 @@
 import {
   BadRequestException,
   ForbiddenException,
-  Inject,
   Injectable,
   NotFoundException,
-} from "@nestjs/common";
-import { and, eq, gt, inArray, lt } from "drizzle-orm";
-import type { NodePgDatabase } from "drizzle-orm/node-postgres";
-import { DRIZZLE_DB } from "../db/db.module";
-import * as schema from "../db/schema";
-import { AuthUser } from "../auth/types/auth-user";
-import { UserRole } from "../auth/dto/user-role.enum";
-import { CreateAppointmentDto } from "./dto/create-appointment.dto";
-import { UpdateAppointmentStatusDto } from "./dto/update-appointment-status.dto";
-import { UpdateAppointmentDto } from "./dto/update-appointment.dto";
-import { AppointmentStatus } from "./dto/appointment.enums";
-import { ServiceLocation } from "../services/dto/service.enums";
-import { PetSize, PetSpecies } from "../pets/dto/pet.enums";
-import { NotificationService } from "../notifications/notification.service";
-import { resolveDurationMinutes } from "../shared/duration";
-import { hasOverlap } from "../shared/overlap";
-import { GoogleCalendarService } from "../google-calendar/google-calendar.service";
-import { CancelAppointmentDto } from "./dto/cancel-appointment.dto";
+} from '@nestjs/common';
+import { BusinessRepository } from '../repositories/business.repository';
+import { AppointmentRepository } from '../repositories/appointment.repository';
+import { PetRepository } from '../repositories/pet.repository';
+import { ServiceRepository } from '../repositories/service.repository';
+import { ServiceDurationRuleRepository } from '../repositories/service-duration-rule.repository';
+import { StaffRepository } from '../repositories/staff.repository';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { GoogleCalendarService } from '../google-calendar/google-calendar.service';
+import {
+  APPOINTMENT_EVENTS,
+  AppointmentCancelledEvent,
+  AppointmentCreatedEvent,
+  AppointmentStatusChangedEvent,
+} from '../common/events/appointment.events';
+import { AuthUser } from '../auth/types/auth-user';
+import { UserRole } from '../auth/dto/user-role.enum';
+import { CreateAppointmentDto } from './dto/create-appointment.dto';
+import { UpdateAppointmentStatusDto } from './dto/update-appointment-status.dto';
+import { UpdateAppointmentDto } from './dto/update-appointment.dto';
+import { CancelAppointmentDto } from './dto/cancel-appointment.dto';
+import { AppointmentStatus } from './dto/appointment.enums';
+import { ServiceLocation } from '../services/dto/service.enums';
+import { PetSize, PetSpecies } from '../pets/dto/pet.enums';
+import { resolveDurationMinutes } from '../shared/duration';
+import { hasOverlap } from '../shared/overlap';
+import { PaginationDto } from '../shared/pagination.dto';
 
 @Injectable()
 export class AppointmentsService {
   constructor(
-    @Inject(DRIZZLE_DB)
-    private readonly db: NodePgDatabase<typeof schema>,
-    private readonly notifications: NotificationService,
+    private readonly businessRepo: BusinessRepository,
+    private readonly appointmentRepo: AppointmentRepository,
+    private readonly petRepo: PetRepository,
+    private readonly serviceRepo: ServiceRepository,
+    private readonly ruleRepo: ServiceDurationRuleRepository,
+    private readonly staffRepo: StaffRepository,
+    private readonly eventEmitter: EventEmitter2,
     private readonly googleCalendar: GoogleCalendarService,
   ) {}
 
   async create(user: AuthUser, payload: CreateAppointmentDto) {
     if (user.role !== UserRole.CLIENT) {
-      throw new ForbiddenException("Only clients can create appointments.");
+      throw new ForbiddenException('Only clients can create appointments.');
     }
 
     const startTime = new Date(payload.startTime);
     if (Number.isNaN(startTime.getTime())) {
-      throw new BadRequestException("Invalid startTime format.");
+      throw new BadRequestException('Invalid startTime format.');
+    }
+    if (startTime <= new Date()) {
+      throw new BadRequestException('startTime must be in the future.');
     }
 
-    const business = await this.getBusiness(payload.businessId);
+    const business = await this.businessRepo.findById(payload.businessId);
+    if (!business) throw new NotFoundException('Business not found.');
     this.validateLocationSupported(business, payload.locationType);
+
+    if (
+      payload.locationType === ServiceLocation.AT_HOME &&
+      !payload.homeAddress
+    ) {
+      throw new BadRequestException(
+        'homeAddress is required for at-home visits.',
+      );
+    }
+
     const groomerId = await this.resolveGroomerId(
       business.id,
       business.ownerUserId,
       payload.groomerId,
     );
 
-    if (payload.locationType === ServiceLocation.AT_HOME && !payload.homeAddress) {
-      throw new BadRequestException("homeAddress is required for at-home visits.");
-    }
+    const petIds = payload.items.map((i) => i.petId);
+    const serviceIds = [...new Set(payload.items.map((i) => i.serviceId))];
 
-    const petIds = payload.items.map((item) => item.petId);
-    const serviceIds = Array.from(
-      new Set(payload.items.map((item) => item.serviceId)),
-    );
+    const [pets, services] = await Promise.all([
+      this.petRepo.findByIds(petIds),
+      this.serviceRepo.findByIds(serviceIds),
+    ]);
 
-    const pets = await this.db
-      .select()
-      .from(schema.pets)
-      .where(inArray(schema.pets.id, petIds));
+    if (pets.length !== petIds.length)
+      throw new NotFoundException('One or more pets were not found.');
+    if (services.length !== serviceIds.length)
+      throw new NotFoundException('One or more services were not found.');
 
-    if (pets.length !== petIds.length) {
-      throw new NotFoundException("One or more pets were not found.");
-    }
-
-    const invalidPet = pets.find((pet) => pet.ownerUserId !== user.id);
-    if (invalidPet) {
-      throw new ForbiddenException("Pets must belong to the current client.");
-    }
-
-    const services = await this.db
-      .select()
-      .from(schema.services)
-      .where(inArray(schema.services.id, serviceIds));
-
-    if (services.length !== serviceIds.length) {
-      throw new NotFoundException("One or more services were not found.");
-    }
+    const invalidPet = pets.find((p) => p.ownerUserId !== user.id);
+    if (invalidPet)
+      throw new ForbiddenException('Pets must belong to the current client.');
 
     for (const service of services) {
-      if (service.businessId !== business.id) {
-        throw new BadRequestException("Service does not belong to this business.");
-      }
-      if (!service.isActive) {
-        throw new BadRequestException("Service is not active.");
-      }
+      if (service.businessId !== business.id)
+        throw new BadRequestException(
+          'Service does not belong to this business.',
+        );
+      if (!service.isActive)
+        throw new BadRequestException('Service is not active.');
       if (!service.locationsSupported.includes(payload.locationType)) {
         throw new BadRequestException(
           `Service ${service.name} is not offered for ${payload.locationType}.`,
@@ -96,13 +107,14 @@ export class AppointmentsService {
       }
     }
 
-    const { totalMinutes, perItemDurations, dogCount } = await this.calculateTotalDuration(
-      business,
-      payload.items,
-      pets,
-      services,
-      payload.locationType,
-    );
+    const { totalMinutes, perItemDurations, dogCount } =
+      await this.calculateTotalDuration(
+        business,
+        payload.items,
+        pets,
+        services,
+        payload.locationType,
+      );
 
     if (
       payload.locationType === ServiceLocation.AT_HOME &&
@@ -116,12 +128,9 @@ export class AppointmentsService {
 
     const endTime = new Date(startTime.getTime() + totalMinutes * 60000);
 
-    await this.ensureNoOverlap(business.id, groomerId, startTime, endTime);
-
-    const created = await this.db.transaction(async (tx) => {
-      const [appointment] = await tx
-        .insert(schema.appointments)
-        .values({
+    try {
+      const created = await this.appointmentRepo.create(
+        {
           businessId: business.id,
           clientId: user.id,
           locationType: payload.locationType,
@@ -131,12 +140,8 @@ export class AppointmentsService {
           status: AppointmentStatus.PENDING,
           homeAddress: payload.homeAddress,
           homeZone: payload.homeZone,
-        })
-        .returning();
-
-      await tx.insert(schema.appointmentPets).values(
+        },
         payload.items.map((item) => ({
-          appointmentId: appointment.id,
           petId: item.petId,
           serviceId: item.serviceId,
           calculatedDurationMinutes: perItemDurations.get(
@@ -146,77 +151,88 @@ export class AppointmentsService {
         })),
       );
 
-      await this.notifications.sendEmail(
-        user.email,
-        `Appointment created for ${appointment.startTime.toISOString()}.`,
+      this.eventEmitter.emit(
+        APPOINTMENT_EVENTS.CREATED,
+        new AppointmentCreatedEvent(created.id, user.email, created.startTime),
       );
-
-      return appointment;
-    });
-    void this.googleCalendar.syncAppointment(created.id).catch((error) => {
-      console.warn("Google calendar sync failed", error);
-    });
-    return created;
+      void this.googleCalendar.syncAppointment(created.id).catch((e) => void e);
+      return created;
+    } catch (error) {
+      if ((error as Error).message === 'OVERLAP') {
+        throw new BadRequestException('Time slot is not available.');
+      }
+      throw error;
+    }
   }
 
-  async list(user: AuthUser) {
+  async list(user: AuthUser, pagination: PaginationDto) {
+    const { limit = 100, offset = 0 } = pagination;
+
     if (user.role === UserRole.CLIENT) {
-      const appointments = await this.db
-        .select()
-        .from(schema.appointments)
-        .where(eq(schema.appointments.clientId, user.id));
-      return this.buildAppointmentsWithDetails(appointments);
+      const appointments = await this.appointmentRepo.findByClientId(
+        user.id,
+        limit,
+        offset,
+      );
+      return this.appointmentRepo.findWithDetails(
+        appointments.map((a) => a.id),
+      );
     }
 
     if (user.role === UserRole.GROOMER_OWNER) {
-      const business = await this.getBusinessForOwner(user.id);
-      const appointments = await this.db
-        .select()
-        .from(schema.appointments)
-        .where(eq(schema.appointments.businessId, business.id));
-      return this.buildAppointmentsWithDetails(appointments);
+      const business = await this.businessRepo.findByOwnerId(user.id);
+      if (!business) throw new NotFoundException('Business not found.');
+      const appointments = await this.appointmentRepo.findByBusinessId(
+        business.id,
+        limit,
+        offset,
+      );
+      return this.appointmentRepo.findWithDetails(
+        appointments.map((a) => a.id),
+      );
     }
 
     if (user.role === UserRole.GROOMER_STAFF) {
-      const appointments = await this.db
-        .select()
-        .from(schema.appointments)
-        .where(eq(schema.appointments.groomerId, user.id));
-      return this.buildAppointmentsWithDetails(appointments);
+      const appointments = await this.appointmentRepo.findByGroomerId(
+        user.id,
+        limit,
+        offset,
+      );
+      return this.appointmentRepo.findWithDetails(
+        appointments.map((a) => a.id),
+      );
     }
 
-    throw new ForbiddenException("Unsupported role for listing appointments.");
+    throw new ForbiddenException('Unsupported role for listing appointments.');
   }
 
   async getById(user: AuthUser, appointmentId: string) {
-    const [appointment] = await this.db
-      .select()
-      .from(schema.appointments)
-      .where(eq(schema.appointments.id, appointmentId));
-
-    if (!appointment) {
-      throw new NotFoundException("Appointment not found.");
-    }
+    const appointment = await this.appointmentRepo.findById(appointmentId);
+    if (!appointment) throw new NotFoundException('Appointment not found.');
 
     if (user.role === UserRole.CLIENT && appointment.clientId !== user.id) {
-      throw new ForbiddenException("You do not have access to this appointment.");
+      throw new ForbiddenException(
+        'You do not have access to this appointment.',
+      );
     }
-
     if (user.role === UserRole.GROOMER_OWNER) {
-      const business = await this.getBusinessForOwner(user.id);
-      if (appointment.businessId !== business.id) {
-        throw new ForbiddenException("You do not have access to this appointment.");
+      const business = await this.businessRepo.findByOwnerId(user.id);
+      if (!business || appointment.businessId !== business.id) {
+        throw new ForbiddenException(
+          'You do not have access to this appointment.',
+        );
       }
     }
-
-    if (user.role === UserRole.GROOMER_STAFF) {
-      if (appointment.groomerId !== user.id) {
-        throw new ForbiddenException("You do not have access to this appointment.");
-      }
+    if (
+      user.role === UserRole.GROOMER_STAFF &&
+      appointment.groomerId !== user.id
+    ) {
+      throw new ForbiddenException(
+        'You do not have access to this appointment.',
+      );
     }
 
-    const [detailed] = await this.buildAppointmentsWithDetails([appointment]);
-    return detailed;
+    return this.appointmentRepo.findWithDetailsById(appointmentId);
   }
 
   async updateStatus(
@@ -224,26 +240,24 @@ export class AppointmentsService {
     appointmentId: string,
     payload: UpdateAppointmentStatusDto,
   ) {
-    const appointment = await this.getAppointmentForGroomer(user, appointmentId);
-
-    const [updated] = await this.db
-      .update(schema.appointments)
-      .set({
-        status: payload.status,
-        cancelReason: payload.cancelReason ?? appointment.cancelReason,
-        updatedAt: new Date(),
-      })
-      .where(eq(schema.appointments.id, appointmentId))
-      .returning();
-
-    await this.notifications.sendEmail(
-      user.email,
-      `Appointment ${appointmentId} status changed to ${payload.status}.`,
+    const appointment = await this.getAppointmentForGroomer(
+      user,
+      appointmentId,
     );
-    void this.googleCalendar.syncAppointment(updated.id).catch((error) => {
-      console.warn("Google calendar sync failed", error);
+    const updated = await this.appointmentRepo.update(appointmentId, {
+      status: payload.status,
+      cancelReason: payload.cancelReason ?? appointment.cancelReason,
     });
 
+    this.eventEmitter.emit(
+      APPOINTMENT_EVENTS.STATUS_CHANGED,
+      new AppointmentStatusChangedEvent(
+        appointmentId,
+        user.email,
+        payload.status,
+      ),
+    );
+    void this.googleCalendar.syncAppointment(updated.id).catch((e) => void e);
     return updated;
   }
 
@@ -252,71 +266,60 @@ export class AppointmentsService {
     appointmentId: string,
     payload: CancelAppointmentDto,
   ) {
-    const [appointment] = await this.db
-      .select()
-      .from(schema.appointments)
-      .where(eq(schema.appointments.id, appointmentId));
+    const appointment = await this.appointmentRepo.findById(appointmentId);
+    if (!appointment) throw new NotFoundException('Appointment not found.');
 
-    if (!appointment) {
-      throw new NotFoundException("Appointment not found.");
-    }
+    if (appointment.status === AppointmentStatus.CANCELLED) return appointment;
 
-    const business = await this.getBusiness(appointment.businessId);
-
-    if (appointment.status === AppointmentStatus.CANCELLED) {
-      return appointment;
-    }
+    const business = await this.businessRepo.findById(appointment.businessId);
+    if (!business) throw new NotFoundException('Business not found.');
 
     if (user.role === UserRole.CLIENT) {
-      if (appointment.clientId !== user.id) {
-        throw new ForbiddenException("You do not have access to this appointment.");
-      }
+      if (appointment.clientId !== user.id)
+        throw new ForbiddenException(
+          'You do not have access to this appointment.',
+        );
       if (
         ![AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED].includes(
           appointment.status as AppointmentStatus,
         )
       ) {
-        throw new BadRequestException("Appointment cannot be cancelled.");
+        throw new BadRequestException('Appointment cannot be cancelled.');
       }
       const hoursDiff =
         (appointment.startTime.getTime() - Date.now()) / 3600000;
       if (hoursDiff < business.minHoursBeforeCancelOrReschedule) {
-        throw new BadRequestException("Too late to cancel this appointment.");
+        throw new BadRequestException('Too late to cancel this appointment.');
       }
     }
 
-    if (user.role === UserRole.GROOMER_OWNER) {
-      const ownerBusiness = await this.getBusinessForOwner(user.id);
-      if (appointment.businessId !== ownerBusiness.id) {
-        throw new ForbiddenException("You do not have access to this appointment.");
-      }
+    if (
+      user.role === UserRole.GROOMER_OWNER &&
+      business.ownerUserId !== user.id
+    ) {
+      throw new ForbiddenException(
+        'You do not have access to this appointment.',
+      );
+    }
+    if (
+      user.role === UserRole.GROOMER_STAFF &&
+      appointment.groomerId !== user.id
+    ) {
+      throw new ForbiddenException(
+        'You do not have access to this appointment.',
+      );
     }
 
-    if (user.role === UserRole.GROOMER_STAFF) {
-      if (appointment.groomerId !== user.id) {
-        throw new ForbiddenException("You do not have access to this appointment.");
-      }
-    }
-
-    const [updated] = await this.db
-      .update(schema.appointments)
-      .set({
-        status: AppointmentStatus.CANCELLED,
-        cancelReason: payload.cancelReason ?? appointment.cancelReason,
-        updatedAt: new Date(),
-      })
-      .where(eq(schema.appointments.id, appointmentId))
-      .returning();
-
-    await this.notifications.sendEmail(
-      user.email,
-      `Appointment ${appointmentId} was cancelled.`,
-    );
-
-    void this.googleCalendar.syncAppointment(updated.id).catch((error) => {
-      console.warn("Google calendar sync failed", error);
+    const updated = await this.appointmentRepo.update(appointmentId, {
+      status: AppointmentStatus.CANCELLED,
+      cancelReason: payload.cancelReason ?? appointment.cancelReason,
     });
 
+    this.eventEmitter.emit(
+      APPOINTMENT_EVENTS.CANCELLED,
+      new AppointmentCancelledEvent(appointmentId, user.email),
+    );
+    void this.googleCalendar.syncAppointment(updated.id).catch((e) => void e);
     return updated;
   }
 
@@ -325,39 +328,53 @@ export class AppointmentsService {
     appointmentId: string,
     payload: UpdateAppointmentDto,
   ) {
-    const [appointment] = await this.db
-      .select()
-      .from(schema.appointments)
-      .where(eq(schema.appointments.id, appointmentId));
+    const appointment = await this.appointmentRepo.findById(appointmentId);
+    if (!appointment) throw new NotFoundException('Appointment not found.');
 
-    if (!appointment) {
-      throw new NotFoundException("Appointment not found.");
+    const nonReschedulableStatuses = [
+      AppointmentStatus.DONE,
+      AppointmentStatus.CANCELLED,
+      AppointmentStatus.NO_SHOW,
+    ];
+    if (
+      nonReschedulableStatuses.includes(appointment.status as AppointmentStatus)
+    ) {
+      throw new BadRequestException(
+        `Cannot reschedule an appointment with status ${appointment.status}.`,
+      );
     }
 
-    const business = await this.getBusiness(appointment.businessId);
+    const business = await this.businessRepo.findById(appointment.businessId);
+    if (!business) throw new NotFoundException('Business not found.');
 
     if (user.role === UserRole.CLIENT) {
-      if (appointment.clientId !== user.id) {
-        throw new ForbiddenException("You do not have access to this appointment.");
-      }
+      if (appointment.clientId !== user.id)
+        throw new ForbiddenException(
+          'You do not have access to this appointment.',
+        );
       const hoursDiff =
         (appointment.startTime.getTime() - Date.now()) / 3600000;
       if (hoursDiff < business.minHoursBeforeCancelOrReschedule) {
-        throw new BadRequestException("Too late to reschedule this appointment.");
+        throw new BadRequestException(
+          'Too late to reschedule this appointment.',
+        );
       }
     }
-
-    if (user.role === UserRole.GROOMER_OWNER) {
-      const ownerBusiness = await this.getBusinessForOwner(user.id);
-      if (appointment.businessId !== ownerBusiness.id) {
-        throw new ForbiddenException("You do not have access to this appointment.");
-      }
+    if (
+      user.role === UserRole.GROOMER_OWNER &&
+      business.ownerUserId !== user.id
+    ) {
+      throw new ForbiddenException(
+        'You do not have access to this appointment.',
+      );
     }
-
-    if (user.role === UserRole.GROOMER_STAFF) {
-      if (appointment.groomerId !== user.id) {
-        throw new ForbiddenException("You do not have access to this appointment.");
-      }
+    if (
+      user.role === UserRole.GROOMER_STAFF &&
+      appointment.groomerId !== user.id
+    ) {
+      throw new ForbiddenException(
+        'You do not have access to this appointment.',
+      );
     }
 
     let newStartTime = appointment.startTime;
@@ -365,51 +382,64 @@ export class AppointmentsService {
 
     if (payload.startTime) {
       const parsedStart = new Date(payload.startTime);
-      if (Number.isNaN(parsedStart.getTime())) {
-        throw new BadRequestException("Invalid startTime format.");
-      }
+      if (Number.isNaN(parsedStart.getTime()))
+        throw new BadRequestException('Invalid startTime format.');
       newStartTime = parsedStart;
-      const durationMinutes = Math.round(
-        (appointment.endTime.getTime() - appointment.startTime.getTime()) / 60000,
-      );
-      newEndTime = new Date(parsedStart.getTime() + durationMinutes * 60000);
+      const durationMs =
+        appointment.endTime.getTime() - appointment.startTime.getTime();
+      newEndTime = new Date(parsedStart.getTime() + durationMs);
+
       const assignedGroomerId = appointment.groomerId ?? business.ownerUserId;
-      await this.ensureNoOverlap(
+      const overlapping = await this.appointmentRepo.findOverlapping(
         appointment.businessId,
         assignedGroomerId,
         newStartTime,
         newEndTime,
-        appointment.id,
       );
+      if (hasOverlap(overlapping, newStartTime, newEndTime, appointment.id)) {
+        throw new BadRequestException('Time slot is not available.');
+      }
     }
 
-    const [updated] = await this.db
-      .update(schema.appointments)
-      .set({
-        startTime: newStartTime,
-        endTime: newEndTime,
-        homeAddress: payload.homeAddress ?? appointment.homeAddress,
-        homeZone: payload.homeZone ?? appointment.homeZone,
-        updatedAt: new Date(),
-      })
-      .where(eq(schema.appointments.id, appointmentId))
-      .returning();
-
-    void this.googleCalendar.syncAppointment(updated.id).catch((error) => {
-      console.warn("Google calendar sync failed", error);
+    const updated = await this.appointmentRepo.update(appointmentId, {
+      startTime: newStartTime,
+      endTime: newEndTime,
+      homeAddress: payload.homeAddress ?? appointment.homeAddress,
+      homeZone: payload.homeZone ?? appointment.homeZone,
     });
+
+    void this.googleCalendar.syncAppointment(updated.id).catch((e) => void e);
     return updated;
   }
 
+  // ─── Private helpers ──────────────────────────────────────────────────────
+
   private async calculateTotalDuration(
-    business: typeof schema.groomerBusinesses.$inferSelect,
-    items: CreateAppointmentDto["items"],
-    pets: typeof schema.pets.$inferSelect[],
-    services: typeof schema.services.$inferSelect[],
-    locationType: ServiceLocation,
+    business: {
+      id: string;
+      homeVisitSetupMinutes: number;
+      homeVisitTeardownMinutes: number;
+      defaultTransportMinutes: number;
+      maxDogsPerHomeVisit: number | null;
+    },
+    items: CreateAppointmentDto['items'],
+    pets: { id: string; species: string; size: string; breed: string }[],
+    services: { id: string; name: string; speciesSupported: string[] }[],
+    locationType: string,
   ) {
-    const serviceMap = new Map(services.map((service) => [service.id, service]));
-    const petMap = new Map(pets.map((pet) => [pet.id, pet]));
+    const serviceMap = new Map(services.map((s) => [s.id, s]));
+    const petMap = new Map(pets.map((p) => [p.id, p]));
+
+    // Batch fetch all duration rules — fixes N+1
+    const allRules = await this.ruleRepo.findByServiceIds([
+      ...new Set(items.map((i) => i.serviceId)),
+    ]);
+    const rulesByService = new Map<string, typeof allRules>();
+    for (const rule of allRules) {
+      if (!rulesByService.has(rule.serviceId))
+        rulesByService.set(rule.serviceId, []);
+      rulesByService.get(rule.serviceId)!.push(rule);
+    }
 
     let totalMinutes = 0;
     let dogCount = 0;
@@ -418,24 +448,28 @@ export class AppointmentsService {
     for (const item of items) {
       const pet = petMap.get(item.petId);
       const service = serviceMap.get(item.serviceId);
-
-      if (!pet || !service) {
-        throw new BadRequestException("Invalid pet or service selection.");
-      }
+      if (!pet || !service)
+        throw new BadRequestException('Invalid pet or service selection.');
 
       if (!service.speciesSupported.includes(pet.species as PetSpecies)) {
         throw new BadRequestException(
           `Service ${service.name} does not support ${pet.species}.`,
         );
       }
+      if (pet.species === PetSpecies.DOG) dogCount += 1;
 
-      if (pet.species === PetSpecies.DOG) {
-        dogCount += 1;
+      const rules = rulesByService.get(item.serviceId) ?? [];
+      try {
+        const duration = resolveDurationMinutes(rules, {
+          species: pet.species as 'DOG' | 'CAT',
+          size: pet.size as PetSize,
+          breed: pet.breed,
+        });
+        perItemDurations.set(`${item.petId}:${item.serviceId}`, duration);
+        totalMinutes += duration;
+      } catch (error) {
+        throw new BadRequestException((error as Error).message);
       }
-
-      const duration = await this.getDurationForPet(service.id, pet);
-      perItemDurations.set(`${item.petId}:${item.serviceId}`, duration);
-      totalMinutes += duration;
     }
 
     if (locationType === ServiceLocation.AT_HOME) {
@@ -448,276 +482,68 @@ export class AppointmentsService {
     return { totalMinutes, perItemDurations, dogCount };
   }
 
-  private async getDurationForPet(
-    serviceId: string,
-    pet: typeof schema.pets.$inferSelect,
-  ) {
-    const rules = await this.db
-      .select()
-      .from(schema.serviceDurationRules)
-      .where(eq(schema.serviceDurationRules.serviceId, serviceId));
-
-    try {
-      return resolveDurationMinutes(rules, {
-        species: pet.species,
-        size: pet.size,
-        breed: pet.breed,
-      });
-    } catch (error) {
-      throw new BadRequestException((error as Error).message);
-    }
-  }
-
-  private async ensureNoOverlap(
-    businessId: string,
-    groomerId: string,
-    startTime: Date,
-    endTime: Date,
-    excludeAppointmentId?: string,
-  ) {
-    const overlaps = await this.db
-      .select({
-        id: schema.appointments.id,
-        status: schema.appointments.status,
-        startTime: schema.appointments.startTime,
-        endTime: schema.appointments.endTime,
-      })
-      .from(schema.appointments)
-      .where(
-        and(
-          eq(schema.appointments.businessId, businessId),
-          eq(schema.appointments.groomerId, groomerId),
-          lt(schema.appointments.startTime, endTime),
-          gt(schema.appointments.endTime, startTime),
-        ),
-      );
-    if (hasOverlap(overlaps, startTime, endTime, excludeAppointmentId)) {
-      throw new BadRequestException("Time slot is not available.");
-    }
-  }
-
   private async resolveGroomerId(
     businessId: string,
     ownerUserId: string,
     groomerId?: string,
   ) {
     if (!groomerId) {
-      const staffCount = await this.db
-        .select({ id: schema.groomerStaffMembers.id })
-        .from(schema.groomerStaffMembers)
-        .where(
-          and(
-            eq(schema.groomerStaffMembers.businessId, businessId),
-            eq(schema.groomerStaffMembers.isActive, true),
-          ),
+      const count = await this.staffRepo.countActiveByBusinessId(businessId);
+      if (count > 0)
+        throw new BadRequestException(
+          'groomerId is required for this business.',
         );
-      if (staffCount.length > 0) {
-        throw new BadRequestException("groomerId is required for this business.");
-      }
       return ownerUserId;
     }
+    if (groomerId === ownerUserId) return groomerId;
 
-    if (groomerId === ownerUserId) {
-      return groomerId;
-    }
-
-    const [staff] = await this.db
-      .select()
-      .from(schema.groomerStaffMembers)
-      .where(
-        and(
-          eq(schema.groomerStaffMembers.businessId, businessId),
-          eq(schema.groomerStaffMembers.userId, groomerId),
-          eq(schema.groomerStaffMembers.isActive, true),
-        ),
-      );
-
-    if (!staff) {
-      throw new BadRequestException("Invalid groomer selection.");
-    }
-
+    const staff = await this.staffRepo.findByBusinessAndUserId(
+      businessId,
+      groomerId,
+    );
+    if (!staff) throw new BadRequestException('Invalid groomer selection.');
     return groomerId;
   }
 
-  private async getBusiness(businessId: string) {
-    const [business] = await this.db
-      .select()
-      .from(schema.groomerBusinesses)
-      .where(eq(schema.groomerBusinesses.id, businessId));
-
-    if (!business) {
-      throw new NotFoundException("Business not found.");
-    }
-
-    return business;
-  }
-
   private validateLocationSupported(
-    business: typeof schema.groomerBusinesses.$inferSelect,
-    locationType: ServiceLocation,
+    business: { offersInSalon: boolean; offersAtHome: boolean },
+    locationType: string,
   ) {
     if (locationType === ServiceLocation.IN_SALON && !business.offersInSalon) {
-      throw new BadRequestException("Business does not offer in-salon services.");
+      throw new BadRequestException(
+        'Business does not offer in-salon services.',
+      );
     }
     if (locationType === ServiceLocation.AT_HOME && !business.offersAtHome) {
-      throw new BadRequestException("Business does not offer at-home services.");
+      throw new BadRequestException(
+        'Business does not offer at-home services.',
+      );
     }
   }
 
-  private async getBusinessForOwner(ownerId: string) {
-    const [business] = await this.db
-      .select()
-      .from(schema.groomerBusinesses)
-      .where(eq(schema.groomerBusinesses.ownerUserId, ownerId));
-
-    if (!business) {
-      throw new NotFoundException("Business not found for this owner.");
+  private async getAppointmentForGroomer(
+    user: AuthUser,
+    appointmentId: string,
+  ) {
+    if (![UserRole.GROOMER_OWNER, UserRole.GROOMER_STAFF].includes(user.role)) {
+      throw new ForbiddenException('Only groomers can update status.');
     }
-
-    return business;
-  }
-
-  private async getAppointmentForGroomer(user: AuthUser, appointmentId: string) {
-    const role = user.role as UserRole;
-    if (![UserRole.GROOMER_OWNER, UserRole.GROOMER_STAFF].includes(role)) {
-      throw new ForbiddenException("Only groomers can update status.");
-    }
-
-    const [appointment] = await this.db
-      .select()
-      .from(schema.appointments)
-      .where(eq(schema.appointments.id, appointmentId));
-
-    if (!appointment) {
-      throw new NotFoundException("Appointment not found.");
-    }
+    const appointment = await this.appointmentRepo.findById(appointmentId);
+    if (!appointment) throw new NotFoundException('Appointment not found.');
 
     if (user.role === UserRole.GROOMER_OWNER) {
-      const business = await this.getBusinessForOwner(user.id);
-      if (appointment.businessId !== business.id) {
-        throw new ForbiddenException("Appointment does not belong to this business.");
+      const business = await this.businessRepo.findByOwnerId(user.id);
+      if (!business || appointment.businessId !== business.id) {
+        throw new ForbiddenException(
+          'Appointment does not belong to this business.',
+        );
       }
-      return appointment;
-    }
-
-    if (appointment.groomerId !== user.id) {
-      throw new ForbiddenException("Appointment does not belong to this groomer.");
+    } else if (appointment.groomerId !== user.id) {
+      throw new ForbiddenException(
+        'Appointment does not belong to this groomer.',
+      );
     }
 
     return appointment;
-  }
-
-  private async buildAppointmentsWithDetails(
-    appointments: (typeof schema.appointments.$inferSelect)[],
-  ) {
-    if (appointments.length === 0) {
-      return [];
-    }
-
-    const appointmentIds = appointments.map((appt) => appt.id);
-    const rows = await this.db
-      .select({
-        appointment: schema.appointments,
-        appointmentPet: schema.appointmentPets,
-        pet: schema.pets,
-        service: schema.services,
-        client: schema.users,
-        business: schema.groomerBusinesses,
-      })
-      .from(schema.appointments)
-      .leftJoin(
-        schema.users,
-        eq(schema.users.id, schema.appointments.clientId),
-      )
-      .leftJoin(
-        schema.groomerBusinesses,
-        eq(schema.groomerBusinesses.id, schema.appointments.businessId),
-      )
-      .leftJoin(
-        schema.appointmentPets,
-        eq(schema.appointmentPets.appointmentId, schema.appointments.id),
-      )
-      .leftJoin(schema.pets, eq(schema.pets.id, schema.appointmentPets.petId))
-      .leftJoin(
-        schema.services,
-        eq(schema.services.id, schema.appointmentPets.serviceId),
-      )
-      .where(inArray(schema.appointments.id, appointmentIds));
-
-    const grouped = new Map<
-      string,
-      typeof schema.appointments.$inferSelect & {
-        client: {
-          id: string;
-          email: string;
-          role: string;
-        } | null;
-        business: {
-          id: string;
-          name: string;
-          phone: string;
-          email: string | null;
-          minHoursBeforeCancelOrReschedule: number;
-        } | null;
-        items: Array<{
-          appointmentPet: typeof schema.appointmentPets.$inferSelect;
-          pet: typeof schema.pets.$inferSelect | null;
-          service: typeof schema.services.$inferSelect | null;
-        }>;
-      }
-    >();
-
-    for (const appointment of appointments) {
-      grouped.set(appointment.id, {
-        ...appointment,
-        client: null,
-        business: null,
-        items: [],
-      });
-    }
-
-    for (const row of rows) {
-      const current = grouped.get(row.appointment.id);
-      if (!current || !row.appointmentPet) {
-        if (current && row.client && row.business) {
-          current.client = {
-            id: row.client.id,
-            email: row.client.email,
-            role: row.client.role,
-          };
-          current.business = {
-            id: row.business.id,
-            name: row.business.name,
-            phone: row.business.phone,
-            email: row.business.email,
-            minHoursBeforeCancelOrReschedule:
-              row.business.minHoursBeforeCancelOrReschedule,
-          };
-        }
-        continue;
-      }
-      if (row.client && row.business) {
-        current.client = {
-          id: row.client.id,
-          email: row.client.email,
-          role: row.client.role,
-        };
-        current.business = {
-          id: row.business.id,
-          name: row.business.name,
-          phone: row.business.phone,
-          email: row.business.email,
-          minHoursBeforeCancelOrReschedule:
-            row.business.minHoursBeforeCancelOrReschedule,
-        };
-      }
-      current.items.push({
-        appointmentPet: row.appointmentPet,
-        pet: row.pet ?? null,
-        service: row.service ?? null,
-      });
-    }
-
-    return Array.from(grouped.values());
   }
 }
